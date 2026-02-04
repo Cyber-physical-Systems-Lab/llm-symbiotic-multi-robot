@@ -1,0 +1,7 @@
+pandas
+tqdm
+pyyaml
+gymnasium
+requests
+# ta-rware 相关依赖（按你项目实际）
+# llm sdk（按你用的，比如 openai / azure / anthropic 等）
