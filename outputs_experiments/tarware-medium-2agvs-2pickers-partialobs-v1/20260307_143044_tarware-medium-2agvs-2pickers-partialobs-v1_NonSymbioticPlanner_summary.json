@@ -1,0 +1,69 @@
+{
+  "episode_summaries": [
+    {
+      "episode_idx": 0,
+      "steps": 500,
+      "total_reward": 12.200000000000164,
+      "total_deliveries": 12,
+      "total_clashes": 2,
+      "total_stucks": 0,
+      "agvs_distance_travelled": 507,
+      "pickers_distance_travelled": 169,
+      "agvs_idle_time": 460,
+      "pickers_idle_time": 826,
+      "total_accepts": 0,
+      "total_declines": 0,
+      "total_alternative_proposals": 0,
+      "communication_steps": 0
+    },
+    {
+      "episode_idx": 1,
+      "steps": 500,
+      "total_reward": 23.0999999999999,
+      "total_deliveries": 21,
+      "total_clashes": 2,
+      "total_stucks": 0,
+      "agvs_distance_travelled": 718,
+      "pickers_distance_travelled": 233,
+      "agvs_idle_time": 227,
+      "pickers_idle_time": 766,
+      "total_accepts": 0,
+      "total_declines": 0,
+      "total_alternative_proposals": 0,
+      "communication_steps": 0
+    },
+    {
+      "episode_idx": 2,
+      "steps": 500,
+      "total_reward": 11.200000000000154,
+      "total_deliveries": 11,
+      "total_clashes": 0,
+      "total_stucks": 0,
+      "agvs_distance_travelled": 441,
+      "pickers_distance_travelled": 113,
+      "agvs_idle_time": 525,
+      "pickers_idle_time": 890,
+      "total_accepts": 0,
+      "total_declines": 0,
+      "total_alternative_proposals": 0,
+      "communication_steps": 0
+    }
+  ],
+  "config": {
+    "env_id": "tarware-medium-2agvs-2pickers-partialobs-v1",
+    "max_steps": 500,
+    "seed": 0,
+    "num_episodes": 3,
+    "render": false,
+    "render_mode": "human",
+    "out_dir": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1",
+    "save_jsonl": true,
+    "save_episode_summary": true,
+    "pickers_to_agvs": true,
+    "block_conflicting_actions": true,
+    "topk_requests": 10,
+    "topk_empty": 10,
+    "topk_goals": 10,
+    "care_for_agents_in_cost": false
+  }
+}

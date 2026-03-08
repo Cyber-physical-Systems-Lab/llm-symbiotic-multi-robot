@@ -194,7 +194,8 @@ class Warehouse(gym.Env):
 
         self.request_queue_size = request_queue_size
         self.request_queue = []
-        self.rack_groups = find_sections(list([loc for loc in self.action_id_to_coords_map.values() if (loc[1], loc[0]) not in self.goals]))
+        #rack区域分组
+        self.rack_groups = find_sections(list([loc for loc in self.action_id_to_coords_map.values() if (loc[1], loc[0]) not in self.goals])) 
         self.agents: List[Agent] = []
         self.stuck_counters = []
         self.renderer = None

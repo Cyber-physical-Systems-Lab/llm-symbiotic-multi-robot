@@ -1,4 +1,4 @@
-"""CLI entrypoint for running the non-symbiotic TA-RWARE baseline."""
+"""CLI entrypoint for running the symbiotic TA-RWARE planner."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from symco.planners.non_symbiotic_planner import NonSymbioticPlanner
+from symco.planners.symbiotic_planner import SymbioticPlanner
 from symco.run.runner import EpisodeRunner, RunnerConfig
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for the baseline run."""
+    """Parse command-line arguments for the symbiotic run."""
     parser = argparse.ArgumentParser(
-        description="Run the non-symbiotic TA-RWARE baseline planner."
+        description="Run the symbiotic TA-RWARE planner."
     )
     parser.add_argument("--env_id", type=str, required=True, help="Gymnasium environment id.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
@@ -92,11 +92,11 @@ def mean_metric(episode_summaries: list[dict], key: str) -> float:
 
 
 def main() -> int:
-    """Run the baseline planner from the command line."""
+    """Run the symbiotic planner from the command line."""
     args = parse_args()
     config = build_config(args)
     runner = EpisodeRunner(config)
-    planner = NonSymbioticPlanner()
+    planner = SymbioticPlanner()
     result = runner.run(planner)
 
     out_dir = Path(config.out_dir)

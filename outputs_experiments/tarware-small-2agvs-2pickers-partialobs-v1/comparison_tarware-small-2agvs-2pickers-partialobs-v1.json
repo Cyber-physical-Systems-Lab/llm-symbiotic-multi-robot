@@ -1,0 +1,1975 @@
+{
+  "config": {
+    "env_id": "tarware-small-2agvs-2pickers-partialobs-v1",
+    "episodes": 5,
+    "max_steps": 500,
+    "out_dir": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1",
+    "topk_requests": 10,
+    "topk_empty": 10,
+    "topk_goals": 10,
+    "pickers_to_agvs": true,
+    "block_conflicting_actions": true,
+    "care_for_agents_in_cost": false
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "non_symbiotic": {
+    "per_seed": [
+      {
+        "seed": 0,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122332_tarware-small-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "mean_deliveries": 16.8,
+        "mean_clashes": 2.4,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 374.0,
+        "mean_pickers_idle_time": 819.6,
+        "mean_agvs_distance_travelled": 581.8,
+        "mean_pickers_distance_travelled": 186.4,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 24.299999999999898,
+            "total_deliveries": 22,
+            "total_clashes": 4,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 709,
+            "pickers_distance_travelled": 216,
+            "agvs_idle_time": 236,
+            "pickers_idle_time": 789,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 18.200000000000028,
+            "total_deliveries": 17,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 395,
+            "pickers_distance_travelled": 191,
+            "agvs_idle_time": 559,
+            "pickers_idle_time": 805,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 20.999999999999968,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 750,
+            "pickers_distance_travelled": 223,
+            "agvs_idle_time": 190,
+            "pickers_idle_time": 782,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 17.100000000000104,
+            "total_deliveries": 16,
+            "total_clashes": 7,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 618,
+            "pickers_distance_travelled": 215,
+            "agvs_idle_time": 350,
+            "pickers_idle_time": 814,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 10.000000000000153,
+            "total_deliveries": 10,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 437,
+            "pickers_distance_travelled": 87,
+            "agvs_idle_time": 535,
+            "pickers_idle_time": 908,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 0,
+          "avg_pair_switches_per_episode": 0.0,
+          "avg_pair_switches_per_agv_per_episode": 0.0,
+          "total_load_events": 87,
+          "avg_wait_to_load_steps": 9.862068965517242,
+          "total_steps_with_clashes": 12,
+          "most_frequent_rack_targets": [],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 22,
+              "avg_wait_to_load_steps": 9.409090909090908,
+              "steps_with_clashes": 4
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 17,
+              "avg_wait_to_load_steps": 11.352941176470589,
+              "steps_with_clashes": 0
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.619047619047619,
+              "steps_with_clashes": 0
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 16,
+              "avg_wait_to_load_steps": 10.4375,
+              "steps_with_clashes": 7
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 11,
+              "avg_wait_to_load_steps": 8.090909090909092,
+              "steps_with_clashes": 1
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 0,
+          "total_steps": 0,
+          "communication_steps": 0,
+          "communication_ratio": 0.0,
+          "total_accepts": 0,
+          "total_declines": 0,
+          "total_alternative_proposals": 0,
+          "total_responses": 0,
+          "accept_ratio": 0.0,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.0,
+          "total_trm_events": 0,
+          "trm_per_communication_step": 0.0,
+          "episode_breakdown": {}
+        }
+      },
+      {
+        "seed": 1,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122355_tarware-small-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "mean_deliveries": 16.6,
+        "mean_clashes": 1.6,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 402.8,
+        "mean_pickers_idle_time": 824.8,
+        "mean_agvs_distance_travelled": 551.2,
+        "mean_pickers_distance_travelled": 178.8,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 18.200000000000028,
+            "total_deliveries": 17,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 395,
+            "pickers_distance_travelled": 191,
+            "agvs_idle_time": 559,
+            "pickers_idle_time": 805,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 20.999999999999968,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 750,
+            "pickers_distance_travelled": 223,
+            "agvs_idle_time": 190,
+            "pickers_idle_time": 782,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 17.100000000000104,
+            "total_deliveries": 16,
+            "total_clashes": 7,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 618,
+            "pickers_distance_travelled": 215,
+            "agvs_idle_time": 350,
+            "pickers_idle_time": 814,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 10.000000000000153,
+            "total_deliveries": 10,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 437,
+            "pickers_distance_travelled": 87,
+            "agvs_idle_time": 535,
+            "pickers_idle_time": 908,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 23.199999999999818,
+            "total_deliveries": 21,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 556,
+            "pickers_distance_travelled": 178,
+            "agvs_idle_time": 380,
+            "pickers_idle_time": 815,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 0,
+          "avg_pair_switches_per_episode": 0.0,
+          "avg_pair_switches_per_agv_per_episode": 0.0,
+          "total_load_events": 85,
+          "avg_wait_to_load_steps": 9.776470588235295,
+          "total_steps_with_clashes": 8,
+          "most_frequent_rack_targets": [],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 17,
+              "avg_wait_to_load_steps": 11.352941176470589,
+              "steps_with_clashes": 0
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.619047619047619,
+              "steps_with_clashes": 0
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 16,
+              "avg_wait_to_load_steps": 10.4375,
+              "steps_with_clashes": 7
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 11,
+              "avg_wait_to_load_steps": 8.090909090909092,
+              "steps_with_clashes": 1
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 20,
+              "avg_wait_to_load_steps": 9.0,
+              "steps_with_clashes": 0
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 0,
+          "total_steps": 0,
+          "communication_steps": 0,
+          "communication_ratio": 0.0,
+          "total_accepts": 0,
+          "total_declines": 0,
+          "total_alternative_proposals": 0,
+          "total_responses": 0,
+          "accept_ratio": 0.0,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.0,
+          "total_trm_events": 0,
+          "trm_per_communication_step": 0.0,
+          "episode_breakdown": {}
+        }
+      },
+      {
+        "seed": 2,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122418_tarware-small-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "mean_deliveries": 17.4,
+        "mean_clashes": 3.6,
+        "mean_stucks": 0.6,
+        "mean_agvs_idle_time": 347.0,
+        "mean_pickers_idle_time": 823.0,
+        "mean_agvs_distance_travelled": 617.4,
+        "mean_pickers_distance_travelled": 184.4,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 20.999999999999968,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 750,
+            "pickers_distance_travelled": 223,
+            "agvs_idle_time": 190,
+            "pickers_idle_time": 782,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 17.100000000000104,
+            "total_deliveries": 16,
+            "total_clashes": 7,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 618,
+            "pickers_distance_travelled": 215,
+            "agvs_idle_time": 350,
+            "pickers_idle_time": 814,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 10.000000000000153,
+            "total_deliveries": 10,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 437,
+            "pickers_distance_travelled": 87,
+            "agvs_idle_time": 535,
+            "pickers_idle_time": 908,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 23.199999999999818,
+            "total_deliveries": 21,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 556,
+            "pickers_distance_travelled": 178,
+            "agvs_idle_time": 380,
+            "pickers_idle_time": 815,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 22.99999999999993,
+            "total_deliveries": 21,
+            "total_clashes": 10,
+            "total_stucks": 2,
+            "agvs_distance_travelled": 726,
+            "pickers_distance_travelled": 219,
+            "agvs_idle_time": 280,
+            "pickers_idle_time": 796,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 0,
+          "avg_pair_switches_per_episode": 0.0,
+          "avg_pair_switches_per_agv_per_episode": 0.0,
+          "total_load_events": 89,
+          "avg_wait_to_load_steps": 9.47191011235955,
+          "total_steps_with_clashes": 18,
+          "most_frequent_rack_targets": [],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.619047619047619,
+              "steps_with_clashes": 0
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 16,
+              "avg_wait_to_load_steps": 10.4375,
+              "steps_with_clashes": 7
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 11,
+              "avg_wait_to_load_steps": 8.090909090909092,
+              "steps_with_clashes": 1
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 20,
+              "avg_wait_to_load_steps": 9.0,
+              "steps_with_clashes": 0
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.761904761904763,
+              "steps_with_clashes": 10
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 0,
+          "total_steps": 0,
+          "communication_steps": 0,
+          "communication_ratio": 0.0,
+          "total_accepts": 0,
+          "total_declines": 0,
+          "total_alternative_proposals": 0,
+          "total_responses": 0,
+          "accept_ratio": 0.0,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.0,
+          "total_trm_events": 0,
+          "trm_per_communication_step": 0.0,
+          "episode_breakdown": {}
+        }
+      },
+      {
+        "seed": 3,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122441_tarware-small-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "mean_deliveries": 16.0,
+        "mean_clashes": 3.6,
+        "mean_stucks": 0.6,
+        "mean_agvs_idle_time": 429.2,
+        "mean_pickers_idle_time": 837.6,
+        "mean_agvs_distance_travelled": 540.0,
+        "mean_pickers_distance_travelled": 166.6,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 17.100000000000104,
+            "total_deliveries": 16,
+            "total_clashes": 7,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 618,
+            "pickers_distance_travelled": 215,
+            "agvs_idle_time": 350,
+            "pickers_idle_time": 814,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 10.000000000000153,
+            "total_deliveries": 10,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 437,
+            "pickers_distance_travelled": 87,
+            "agvs_idle_time": 535,
+            "pickers_idle_time": 908,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 23.199999999999818,
+            "total_deliveries": 21,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 556,
+            "pickers_distance_travelled": 178,
+            "agvs_idle_time": 380,
+            "pickers_idle_time": 815,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 22.99999999999993,
+            "total_deliveries": 21,
+            "total_clashes": 10,
+            "total_stucks": 2,
+            "agvs_distance_travelled": 726,
+            "pickers_distance_travelled": 219,
+            "agvs_idle_time": 280,
+            "pickers_idle_time": 796,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 12.200000000000173,
+            "total_deliveries": 12,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 363,
+            "pickers_distance_travelled": 134,
+            "agvs_idle_time": 601,
+            "pickers_idle_time": 855,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 0,
+          "avg_pair_switches_per_episode": 0.0,
+          "avg_pair_switches_per_agv_per_episode": 0.0,
+          "total_load_events": 80,
+          "avg_wait_to_load_steps": 9.7125,
+          "total_steps_with_clashes": 18,
+          "most_frequent_rack_targets": [],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 16,
+              "avg_wait_to_load_steps": 10.4375,
+              "steps_with_clashes": 7
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 11,
+              "avg_wait_to_load_steps": 8.090909090909092,
+              "steps_with_clashes": 1
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 20,
+              "avg_wait_to_load_steps": 9.0,
+              "steps_with_clashes": 0
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.761904761904763,
+              "steps_with_clashes": 10
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 12,
+              "avg_wait_to_load_steps": 11.333333333333334,
+              "steps_with_clashes": 0
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 0,
+          "total_steps": 0,
+          "communication_steps": 0,
+          "communication_ratio": 0.0,
+          "total_accepts": 0,
+          "total_declines": 0,
+          "total_alternative_proposals": 0,
+          "total_responses": 0,
+          "accept_ratio": 0.0,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.0,
+          "total_trm_events": 0,
+          "trm_per_communication_step": 0.0,
+          "episode_breakdown": {}
+        }
+      },
+      {
+        "seed": 4,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122505_tarware-small-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "mean_deliveries": 16.2,
+        "mean_clashes": 4.0,
+        "mean_stucks": 0.4,
+        "mean_agvs_idle_time": 444.8,
+        "mean_pickers_idle_time": 825.6,
+        "mean_agvs_distance_travelled": 527.0,
+        "mean_pickers_distance_travelled": 176.8,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 10.000000000000153,
+            "total_deliveries": 10,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 437,
+            "pickers_distance_travelled": 87,
+            "agvs_idle_time": 535,
+            "pickers_idle_time": 908,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 23.199999999999818,
+            "total_deliveries": 21,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 556,
+            "pickers_distance_travelled": 178,
+            "agvs_idle_time": 380,
+            "pickers_idle_time": 815,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 22.99999999999993,
+            "total_deliveries": 21,
+            "total_clashes": 10,
+            "total_stucks": 2,
+            "agvs_distance_travelled": 726,
+            "pickers_distance_travelled": 219,
+            "agvs_idle_time": 280,
+            "pickers_idle_time": 796,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 12.200000000000173,
+            "total_deliveries": 12,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 363,
+            "pickers_distance_travelled": 134,
+            "agvs_idle_time": 601,
+            "pickers_idle_time": 855,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 18.39999999999988,
+            "total_deliveries": 17,
+            "total_clashes": 9,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 553,
+            "pickers_distance_travelled": 266,
+            "agvs_idle_time": 428,
+            "pickers_idle_time": 754,
+            "total_accepts": 0,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 0
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 0,
+          "avg_pair_switches_per_episode": 0.0,
+          "avg_pair_switches_per_agv_per_episode": 0.0,
+          "total_load_events": 82,
+          "avg_wait_to_load_steps": 9.951219512195122,
+          "total_steps_with_clashes": 20,
+          "most_frequent_rack_targets": [],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 11,
+              "avg_wait_to_load_steps": 8.090909090909092,
+              "steps_with_clashes": 1
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 20,
+              "avg_wait_to_load_steps": 9.0,
+              "steps_with_clashes": 0
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 9.761904761904763,
+              "steps_with_clashes": 10
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 12,
+              "avg_wait_to_load_steps": 11.333333333333334,
+              "steps_with_clashes": 0
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 18,
+              "avg_wait_to_load_steps": 11.444444444444445,
+              "steps_with_clashes": 9
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 0,
+          "total_steps": 0,
+          "communication_steps": 0,
+          "communication_ratio": 0.0,
+          "total_accepts": 0,
+          "total_declines": 0,
+          "total_alternative_proposals": 0,
+          "total_responses": 0,
+          "accept_ratio": 0.0,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.0,
+          "total_trm_events": 0,
+          "trm_per_communication_step": 0.0,
+          "episode_breakdown": {}
+        }
+      }
+    ],
+    "aggregate": {
+      "mean_deliveries": 16.6,
+      "mean_clashes": 3.04,
+      "mean_stucks": 0.4,
+      "mean_agvs_idle_time": 399.56,
+      "mean_pickers_idle_time": 826.1200000000001,
+      "mean_agvs_distance_travelled": 563.48,
+      "mean_pickers_distance_travelled": 178.6,
+      "avg_pair_switches_per_episode": 0.0,
+      "avg_wait_to_load_steps": 9.754833835661442,
+      "communication_ratio": 0.0,
+      "total_trm_events_per_seed": 0.0
+    }
+  },
+  "symbiotic": {
+    "per_seed": [
+      {
+        "seed": 0,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122343_tarware-small-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "mean_deliveries": 18.8,
+        "mean_clashes": 5.0,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 263.0,
+        "mean_pickers_idle_time": 837.2,
+        "mean_agvs_distance_travelled": 697.8,
+        "mean_pickers_distance_travelled": 175.2,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 24.399999999999856,
+            "total_deliveries": 22,
+            "total_clashes": 8,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 720,
+            "pickers_distance_travelled": 140,
+            "agvs_idle_time": 239,
+            "pickers_idle_time": 864,
+            "total_accepts": 40,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 95
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 23.199999999999875,
+            "total_deliveries": 21,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 719,
+            "pickers_distance_travelled": 160,
+            "agvs_idle_time": 226,
+            "pickers_idle_time": 838,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 84
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 14.700000000000166,
+            "total_deliveries": 14,
+            "total_clashes": 3,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 601,
+            "pickers_distance_travelled": 163,
+            "agvs_idle_time": 367,
+            "pickers_idle_time": 857,
+            "total_accepts": 24,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 271
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 19.60000000000003,
+            "total_deliveries": 18,
+            "total_clashes": 13,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 716,
+            "pickers_distance_travelled": 272,
+            "agvs_idle_time": 275,
+            "pickers_idle_time": 755,
+            "total_accepts": 36,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 104
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 20.99999999999996,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 733,
+            "pickers_distance_travelled": 141,
+            "agvs_idle_time": 208,
+            "pickers_idle_time": 872,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 76
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 17,
+          "avg_pair_switches_per_episode": 3.4,
+          "avg_pair_switches_per_agv_per_episode": 1.7,
+          "total_load_events": 99,
+          "avg_wait_to_load_steps": 8.636363636363637,
+          "total_steps_with_clashes": 25,
+          "most_frequent_rack_targets": [
+            [
+              29,
+              6
+            ],
+            [
+              28,
+              6
+            ],
+            [
+              79,
+              6
+            ],
+            [
+              80,
+              6
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              13,
+              6
+            ],
+            [
+              76,
+              5
+            ],
+            [
+              45,
+              4
+            ],
+            [
+              43,
+              4
+            ],
+            [
+              81,
+              4
+            ]
+          ],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 2,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 7.043478260869565,
+              "steps_with_clashes": 8
+            },
+            "1": {
+              "pair_switches": 2,
+              "load_events": 22,
+              "avg_wait_to_load_steps": 8.181818181818182,
+              "steps_with_clashes": 1
+            },
+            "2": {
+              "pair_switches": 6,
+              "load_events": 14,
+              "avg_wait_to_load_steps": 9.357142857142858,
+              "steps_with_clashes": 3
+            },
+            "3": {
+              "pair_switches": 7,
+              "load_events": 19,
+              "avg_wait_to_load_steps": 11.736842105263158,
+              "steps_with_clashes": 13
+            },
+            "4": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 7.571428571428571,
+              "steps_with_clashes": 0
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 5,
+          "total_steps": 2500,
+          "communication_steps": 630,
+          "communication_ratio": 0.252,
+          "total_accepts": 176,
+          "total_declines": 0,
+          "total_alternative_proposals": 24,
+          "total_responses": 200,
+          "accept_ratio": 0.88,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.12,
+          "total_trm_events": 20,
+          "trm_per_communication_step": 0.031746031746031744,
+          "episode_breakdown": {
+            "0": {
+              "steps": 500,
+              "communication_steps": 95,
+              "accepts": 40,
+              "declines": 0,
+              "alternatives": 6,
+              "trm_events": 5
+            },
+            "1": {
+              "steps": 500,
+              "communication_steps": 84,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 7,
+              "trm_events": 6
+            },
+            "2": {
+              "steps": 500,
+              "communication_steps": 271,
+              "accepts": 24,
+              "declines": 0,
+              "alternatives": 6,
+              "trm_events": 5
+            },
+            "3": {
+              "steps": 500,
+              "communication_steps": 104,
+              "accepts": 36,
+              "declines": 0,
+              "alternatives": 2,
+              "trm_events": 2
+            },
+            "4": {
+              "steps": 500,
+              "communication_steps": 76,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 3,
+              "trm_events": 2
+            }
+          }
+        }
+      },
+      {
+        "seed": 1,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122406_tarware-small-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "mean_deliveries": 18.8,
+        "mean_clashes": 4.0,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 264.8,
+        "mean_pickers_idle_time": 830.8,
+        "mean_agvs_distance_travelled": 693.4,
+        "mean_pickers_distance_travelled": 180.6,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 23.199999999999875,
+            "total_deliveries": 21,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 719,
+            "pickers_distance_travelled": 160,
+            "agvs_idle_time": 226,
+            "pickers_idle_time": 838,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 84
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 14.700000000000166,
+            "total_deliveries": 14,
+            "total_clashes": 3,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 601,
+            "pickers_distance_travelled": 163,
+            "agvs_idle_time": 367,
+            "pickers_idle_time": 857,
+            "total_accepts": 24,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 271
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 19.60000000000003,
+            "total_deliveries": 18,
+            "total_clashes": 13,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 716,
+            "pickers_distance_travelled": 272,
+            "agvs_idle_time": 275,
+            "pickers_idle_time": 755,
+            "total_accepts": 36,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 104
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 20.99999999999996,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 733,
+            "pickers_distance_travelled": 141,
+            "agvs_idle_time": 208,
+            "pickers_idle_time": 872,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 76
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 24.399999999999896,
+            "total_deliveries": 22,
+            "total_clashes": 3,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 698,
+            "pickers_distance_travelled": 167,
+            "agvs_idle_time": 248,
+            "pickers_idle_time": 832,
+            "total_accepts": 37,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 105
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 23,
+          "avg_pair_switches_per_episode": 4.6,
+          "avg_pair_switches_per_agv_per_episode": 2.3,
+          "total_load_events": 99,
+          "avg_wait_to_load_steps": 8.94949494949495,
+          "total_steps_with_clashes": 20,
+          "most_frequent_rack_targets": [
+            [
+              30,
+              6
+            ],
+            [
+              27,
+              6
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              13,
+              6
+            ],
+            [
+              59,
+              6
+            ],
+            [
+              29,
+              6
+            ],
+            [
+              64,
+              5
+            ],
+            [
+              76,
+              5
+            ],
+            [
+              86,
+              4
+            ],
+            [
+              68,
+              4
+            ]
+          ],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 2,
+              "load_events": 22,
+              "avg_wait_to_load_steps": 8.181818181818182,
+              "steps_with_clashes": 1
+            },
+            "1": {
+              "pair_switches": 6,
+              "load_events": 14,
+              "avg_wait_to_load_steps": 9.357142857142858,
+              "steps_with_clashes": 3
+            },
+            "2": {
+              "pair_switches": 7,
+              "load_events": 19,
+              "avg_wait_to_load_steps": 11.736842105263158,
+              "steps_with_clashes": 13
+            },
+            "3": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 7.571428571428571,
+              "steps_with_clashes": 0
+            },
+            "4": {
+              "pair_switches": 8,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.391304347826088,
+              "steps_with_clashes": 3
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 5,
+          "total_steps": 2500,
+          "communication_steps": 640,
+          "communication_ratio": 0.256,
+          "total_accepts": 173,
+          "total_declines": 0,
+          "total_alternative_proposals": 28,
+          "total_responses": 201,
+          "accept_ratio": 0.8606965174129353,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.13930348258706468,
+          "total_trm_events": 24,
+          "trm_per_communication_step": 0.0375,
+          "episode_breakdown": {
+            "0": {
+              "steps": 500,
+              "communication_steps": 84,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 7,
+              "trm_events": 6
+            },
+            "1": {
+              "steps": 500,
+              "communication_steps": 271,
+              "accepts": 24,
+              "declines": 0,
+              "alternatives": 6,
+              "trm_events": 5
+            },
+            "2": {
+              "steps": 500,
+              "communication_steps": 104,
+              "accepts": 36,
+              "declines": 0,
+              "alternatives": 2,
+              "trm_events": 2
+            },
+            "3": {
+              "steps": 500,
+              "communication_steps": 76,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 3,
+              "trm_events": 2
+            },
+            "4": {
+              "steps": 500,
+              "communication_steps": 105,
+              "accepts": 37,
+              "declines": 0,
+              "alternatives": 10,
+              "trm_events": 9
+            }
+          }
+        }
+      },
+      {
+        "seed": 2,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122429_tarware-small-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "mean_deliveries": 19.2,
+        "mean_clashes": 4.0,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 266.2,
+        "mean_pickers_idle_time": 820.6,
+        "mean_agvs_distance_travelled": 691.2,
+        "mean_pickers_distance_travelled": 193.6,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 14.700000000000166,
+            "total_deliveries": 14,
+            "total_clashes": 3,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 601,
+            "pickers_distance_travelled": 163,
+            "agvs_idle_time": 367,
+            "pickers_idle_time": 857,
+            "total_accepts": 24,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 271
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 19.60000000000003,
+            "total_deliveries": 18,
+            "total_clashes": 13,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 716,
+            "pickers_distance_travelled": 272,
+            "agvs_idle_time": 275,
+            "pickers_idle_time": 755,
+            "total_accepts": 36,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 104
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 20.99999999999996,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 733,
+            "pickers_distance_travelled": 141,
+            "agvs_idle_time": 208,
+            "pickers_idle_time": 872,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 76
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 24.399999999999896,
+            "total_deliveries": 22,
+            "total_clashes": 3,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 698,
+            "pickers_distance_travelled": 167,
+            "agvs_idle_time": 248,
+            "pickers_idle_time": 832,
+            "total_accepts": 37,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 105
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 25.49999999999992,
+            "total_deliveries": 23,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 708,
+            "pickers_distance_travelled": 225,
+            "agvs_idle_time": 233,
+            "pickers_idle_time": 787,
+            "total_accepts": 35,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 91
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 27,
+          "avg_pair_switches_per_episode": 5.4,
+          "avg_pair_switches_per_agv_per_episode": 2.7,
+          "total_load_events": 100,
+          "avg_wait_to_load_steps": 9.03,
+          "total_steps_with_clashes": 20,
+          "most_frequent_rack_targets": [
+            [
+              13,
+              6
+            ],
+            [
+              27,
+              6
+            ],
+            [
+              56,
+              6
+            ],
+            [
+              59,
+              6
+            ],
+            [
+              30,
+              6
+            ],
+            [
+              29,
+              6
+            ],
+            [
+              95,
+              5
+            ],
+            [
+              11,
+              4
+            ],
+            [
+              75,
+              4
+            ],
+            [
+              12,
+              4
+            ]
+          ],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 6,
+              "load_events": 14,
+              "avg_wait_to_load_steps": 9.357142857142858,
+              "steps_with_clashes": 3
+            },
+            "1": {
+              "pair_switches": 7,
+              "load_events": 19,
+              "avg_wait_to_load_steps": 11.736842105263158,
+              "steps_with_clashes": 13
+            },
+            "2": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 7.571428571428571,
+              "steps_with_clashes": 0
+            },
+            "3": {
+              "pair_switches": 8,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.391304347826088,
+              "steps_with_clashes": 3
+            },
+            "4": {
+              "pair_switches": 6,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.565217391304348,
+              "steps_with_clashes": 1
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 5,
+          "total_steps": 2500,
+          "communication_steps": 647,
+          "communication_ratio": 0.2588,
+          "total_accepts": 170,
+          "total_declines": 0,
+          "total_alternative_proposals": 34,
+          "total_responses": 204,
+          "accept_ratio": 0.8333333333333334,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.16666666666666666,
+          "total_trm_events": 29,
+          "trm_per_communication_step": 0.04482225656877898,
+          "episode_breakdown": {
+            "0": {
+              "steps": 500,
+              "communication_steps": 271,
+              "accepts": 24,
+              "declines": 0,
+              "alternatives": 6,
+              "trm_events": 5
+            },
+            "1": {
+              "steps": 500,
+              "communication_steps": 104,
+              "accepts": 36,
+              "declines": 0,
+              "alternatives": 2,
+              "trm_events": 2
+            },
+            "2": {
+              "steps": 500,
+              "communication_steps": 76,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 3,
+              "trm_events": 2
+            },
+            "3": {
+              "steps": 500,
+              "communication_steps": 105,
+              "accepts": 37,
+              "declines": 0,
+              "alternatives": 10,
+              "trm_events": 9
+            },
+            "4": {
+              "steps": 500,
+              "communication_steps": 91,
+              "accepts": 35,
+              "declines": 0,
+              "alternatives": 13,
+              "trm_events": 11
+            }
+          }
+        }
+      },
+      {
+        "seed": 3,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122453_tarware-small-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "mean_deliveries": 21.0,
+        "mean_clashes": 3.8,
+        "mean_stucks": 0.0,
+        "mean_agvs_idle_time": 250.2,
+        "mean_pickers_idle_time": 800.4,
+        "mean_agvs_distance_travelled": 701.0,
+        "mean_pickers_distance_travelled": 208.2,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 19.60000000000003,
+            "total_deliveries": 18,
+            "total_clashes": 13,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 716,
+            "pickers_distance_travelled": 272,
+            "agvs_idle_time": 275,
+            "pickers_idle_time": 755,
+            "total_accepts": 36,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 104
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 20.99999999999996,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 733,
+            "pickers_distance_travelled": 141,
+            "agvs_idle_time": 208,
+            "pickers_idle_time": 872,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 76
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 24.399999999999896,
+            "total_deliveries": 22,
+            "total_clashes": 3,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 698,
+            "pickers_distance_travelled": 167,
+            "agvs_idle_time": 248,
+            "pickers_idle_time": 832,
+            "total_accepts": 37,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 105
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 25.49999999999992,
+            "total_deliveries": 23,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 708,
+            "pickers_distance_travelled": 225,
+            "agvs_idle_time": 233,
+            "pickers_idle_time": 787,
+            "total_accepts": 35,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 91
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 25.799999999999844,
+            "total_deliveries": 23,
+            "total_clashes": 2,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 650,
+            "pickers_distance_travelled": 236,
+            "agvs_idle_time": 287,
+            "pickers_idle_time": 756,
+            "total_accepts": 40,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 85
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 29,
+          "avg_pair_switches_per_episode": 5.8,
+          "avg_pair_switches_per_agv_per_episode": 2.9,
+          "total_load_events": 111,
+          "avg_wait_to_load_steps": 9.126126126126126,
+          "total_steps_with_clashes": 19,
+          "most_frequent_rack_targets": [
+            [
+              67,
+              8
+            ],
+            [
+              95,
+              7
+            ],
+            [
+              30,
+              6
+            ],
+            [
+              29,
+              6
+            ],
+            [
+              35,
+              6
+            ],
+            [
+              96,
+              6
+            ],
+            [
+              56,
+              4
+            ],
+            [
+              59,
+              4
+            ],
+            [
+              60,
+              4
+            ],
+            [
+              46,
+              4
+            ]
+          ],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 7,
+              "load_events": 19,
+              "avg_wait_to_load_steps": 11.736842105263158,
+              "steps_with_clashes": 13
+            },
+            "1": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 7.571428571428571,
+              "steps_with_clashes": 0
+            },
+            "2": {
+              "pair_switches": 8,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.391304347826088,
+              "steps_with_clashes": 3
+            },
+            "3": {
+              "pair_switches": 6,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.565217391304348,
+              "steps_with_clashes": 1
+            },
+            "4": {
+              "pair_switches": 8,
+              "load_events": 25,
+              "avg_wait_to_load_steps": 9.64,
+              "steps_with_clashes": 2
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 5,
+          "total_steps": 2500,
+          "communication_steps": 461,
+          "communication_ratio": 0.1844,
+          "total_accepts": 186,
+          "total_declines": 0,
+          "total_alternative_proposals": 37,
+          "total_responses": 223,
+          "accept_ratio": 0.8340807174887892,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.16591928251121077,
+          "total_trm_events": 33,
+          "trm_per_communication_step": 0.07158351409978309,
+          "episode_breakdown": {
+            "0": {
+              "steps": 500,
+              "communication_steps": 104,
+              "accepts": 36,
+              "declines": 0,
+              "alternatives": 2,
+              "trm_events": 2
+            },
+            "1": {
+              "steps": 500,
+              "communication_steps": 76,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 3,
+              "trm_events": 2
+            },
+            "2": {
+              "steps": 500,
+              "communication_steps": 105,
+              "accepts": 37,
+              "declines": 0,
+              "alternatives": 10,
+              "trm_events": 9
+            },
+            "3": {
+              "steps": 500,
+              "communication_steps": 91,
+              "accepts": 35,
+              "declines": 0,
+              "alternatives": 13,
+              "trm_events": 11
+            },
+            "4": {
+              "steps": 500,
+              "communication_steps": 85,
+              "accepts": 40,
+              "declines": 0,
+              "alternatives": 9,
+              "trm_events": 9
+            }
+          }
+        }
+      },
+      {
+        "seed": 4,
+        "jsonl_path": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/20260308_122516_tarware-small-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "mean_deliveries": 20.4,
+        "mean_clashes": 3.0,
+        "mean_stucks": 0.2,
+        "mean_agvs_idle_time": 294.6,
+        "mean_pickers_idle_time": 813.8,
+        "mean_agvs_distance_travelled": 652.0,
+        "mean_pickers_distance_travelled": 192.4,
+        "episode_summaries": [
+          {
+            "episode_idx": 0,
+            "steps": 500,
+            "total_reward": 20.99999999999996,
+            "total_deliveries": 19,
+            "total_clashes": 0,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 733,
+            "pickers_distance_travelled": 141,
+            "agvs_idle_time": 208,
+            "pickers_idle_time": 872,
+            "total_accepts": 38,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 76
+          },
+          {
+            "episode_idx": 1,
+            "steps": 500,
+            "total_reward": 24.399999999999896,
+            "total_deliveries": 22,
+            "total_clashes": 3,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 698,
+            "pickers_distance_travelled": 167,
+            "agvs_idle_time": 248,
+            "pickers_idle_time": 832,
+            "total_accepts": 37,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 105
+          },
+          {
+            "episode_idx": 2,
+            "steps": 500,
+            "total_reward": 25.49999999999992,
+            "total_deliveries": 23,
+            "total_clashes": 1,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 708,
+            "pickers_distance_travelled": 225,
+            "agvs_idle_time": 233,
+            "pickers_idle_time": 787,
+            "total_accepts": 35,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 91
+          },
+          {
+            "episode_idx": 3,
+            "steps": 500,
+            "total_reward": 25.799999999999844,
+            "total_deliveries": 23,
+            "total_clashes": 2,
+            "total_stucks": 0,
+            "agvs_distance_travelled": 650,
+            "pickers_distance_travelled": 236,
+            "agvs_idle_time": 287,
+            "pickers_idle_time": 756,
+            "total_accepts": 40,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 85
+          },
+          {
+            "episode_idx": 4,
+            "steps": 500,
+            "total_reward": 15.900000000000182,
+            "total_deliveries": 15,
+            "total_clashes": 9,
+            "total_stucks": 1,
+            "agvs_distance_travelled": 471,
+            "pickers_distance_travelled": 193,
+            "agvs_idle_time": 497,
+            "pickers_idle_time": 822,
+            "total_accepts": 26,
+            "total_declines": 0,
+            "total_alternative_proposals": 0,
+            "communication_steps": 334
+          }
+        ],
+        "behavior_summary": {
+          "episodes": 5,
+          "total_pair_switches": 25,
+          "avg_pair_switches_per_episode": 5.0,
+          "avg_pair_switches_per_agv_per_episode": 2.5,
+          "total_load_events": 107,
+          "avg_wait_to_load_steps": 8.934579439252337,
+          "total_steps_with_clashes": 15,
+          "most_frequent_rack_targets": [
+            [
+              67,
+              8
+            ],
+            [
+              95,
+              7
+            ],
+            [
+              96,
+              6
+            ],
+            [
+              98,
+              6
+            ],
+            [
+              53,
+              5
+            ],
+            [
+              40,
+              4
+            ],
+            [
+              89,
+              4
+            ],
+            [
+              71,
+              4
+            ],
+            [
+              45,
+              4
+            ],
+            [
+              29,
+              4
+            ]
+          ],
+          "episode_breakdown": {
+            "0": {
+              "pair_switches": 0,
+              "load_events": 21,
+              "avg_wait_to_load_steps": 7.571428571428571,
+              "steps_with_clashes": 0
+            },
+            "1": {
+              "pair_switches": 8,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.391304347826088,
+              "steps_with_clashes": 3
+            },
+            "2": {
+              "pair_switches": 6,
+              "load_events": 23,
+              "avg_wait_to_load_steps": 8.565217391304348,
+              "steps_with_clashes": 1
+            },
+            "3": {
+              "pair_switches": 8,
+              "load_events": 25,
+              "avg_wait_to_load_steps": 9.64,
+              "steps_with_clashes": 2
+            },
+            "4": {
+              "pair_switches": 3,
+              "load_events": 15,
+              "avg_wait_to_load_steps": 11.066666666666666,
+              "steps_with_clashes": 9
+            }
+          }
+        },
+        "communication_summary": {
+          "episodes": 5,
+          "total_steps": 2500,
+          "communication_steps": 691,
+          "communication_ratio": 0.2764,
+          "total_accepts": 176,
+          "total_declines": 0,
+          "total_alternative_proposals": 41,
+          "total_responses": 217,
+          "accept_ratio": 0.8110599078341014,
+          "decline_ratio": 0.0,
+          "alternative_ratio": 0.1889400921658986,
+          "total_trm_events": 36,
+          "trm_per_communication_step": 0.05209840810419682,
+          "episode_breakdown": {
+            "0": {
+              "steps": 500,
+              "communication_steps": 76,
+              "accepts": 38,
+              "declines": 0,
+              "alternatives": 3,
+              "trm_events": 2
+            },
+            "1": {
+              "steps": 500,
+              "communication_steps": 105,
+              "accepts": 37,
+              "declines": 0,
+              "alternatives": 10,
+              "trm_events": 9
+            },
+            "2": {
+              "steps": 500,
+              "communication_steps": 91,
+              "accepts": 35,
+              "declines": 0,
+              "alternatives": 13,
+              "trm_events": 11
+            },
+            "3": {
+              "steps": 500,
+              "communication_steps": 85,
+              "accepts": 40,
+              "declines": 0,
+              "alternatives": 9,
+              "trm_events": 9
+            },
+            "4": {
+              "steps": 500,
+              "communication_steps": 334,
+              "accepts": 26,
+              "declines": 0,
+              "alternatives": 6,
+              "trm_events": 5
+            }
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "mean_deliveries": 19.639999999999997,
+      "mean_clashes": 3.96,
+      "mean_stucks": 0.16,
+      "mean_agvs_idle_time": 267.76000000000005,
+      "mean_pickers_idle_time": 820.5600000000001,
+      "mean_agvs_distance_travelled": 687.0799999999999,
+      "mean_pickers_distance_travelled": 189.99999999999997,
+      "avg_pair_switches_per_episode": 4.84,
+      "avg_wait_to_load_steps": 8.93531283024741,
+      "communication_ratio": 0.24551999999999996,
+      "total_trm_events_per_seed": 28.4
+    }
+  }
+}
