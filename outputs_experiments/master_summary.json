@@ -1,9 +1,10 @@
 {
   "config": {
     "env_ids": [
-      "tarware-small-2agvs-2pickers-partialobs-v1",
-      "tarware-medium-2agvs-2pickers-partialobs-v1",
-      "tarware-large-2agvs-2pickers-partialobs-v1"
+      "tarware-tiny-2agvs-4pickers-partialobs-v1",
+      "tarware-small-2agvs-4pickers-partialobs-v1",
+      "tarware-medium-2agvs-4pickers-partialobs-v1",
+      "tarware-large-2agvs-4pickers-partialobs-v1"
     ],
     "episodes": 5,
     "seeds": "0,1,2,3,4",
@@ -18,34 +19,44 @@
   },
   "experiments": [
     {
-      "env_id": "tarware-small-2agvs-2pickers-partialobs-v1",
-      "comparison_json": "outputs_experiments/tarware-small-2agvs-2pickers-partialobs-v1/comparison_tarware-small-2agvs-2pickers-partialobs-v1.json",
-      "baseline_mean_deliveries": 16.6,
-      "symbiotic_mean_deliveries": 19.639999999999997,
-      "baseline_avg_wait_to_load_steps": 9.754833835661442,
-      "symbiotic_avg_wait_to_load_steps": 8.93531283024741,
-      "symbiotic_communication_ratio": 0.24551999999999996,
-      "symbiotic_total_trm_events_per_seed": 28.4
+      "env_id": "tarware-tiny-2agvs-4pickers-partialobs-v1",
+      "comparison_json": "outputs_experiments/tarware-tiny-2agvs-4pickers-partialobs-v1/comparison_tarware-tiny-2agvs-4pickers-partialobs-v1.json",
+      "baseline_mean_deliveries": 23.2,
+      "symbiotic_mean_deliveries": 24.28,
+      "baseline_avg_wait_to_load_steps": 6.565989666128121,
+      "symbiotic_avg_wait_to_load_steps": 5.861484549436106,
+      "symbiotic_communication_ratio": 0.46312,
+      "symbiotic_total_trm_events_per_seed": 28.8
     },
     {
-      "env_id": "tarware-medium-2agvs-2pickers-partialobs-v1",
-      "comparison_json": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/comparison_tarware-medium-2agvs-2pickers-partialobs-v1.json",
-      "baseline_mean_deliveries": 18.96,
-      "symbiotic_mean_deliveries": 19.240000000000002,
-      "baseline_avg_wait_to_load_steps": 11.439008358063678,
-      "symbiotic_avg_wait_to_load_steps": 11.387990034386842,
-      "symbiotic_communication_ratio": 0.39432,
-      "symbiotic_total_trm_events_per_seed": 25.4
+      "env_id": "tarware-small-2agvs-4pickers-partialobs-v1",
+      "comparison_json": "outputs_experiments/tarware-small-2agvs-4pickers-partialobs-v1/comparison_tarware-small-2agvs-4pickers-partialobs-v1.json",
+      "baseline_mean_deliveries": 18.559999999999995,
+      "symbiotic_mean_deliveries": 20.96,
+      "baseline_avg_wait_to_load_steps": 8.341591830863342,
+      "symbiotic_avg_wait_to_load_steps": 7.971576853490282,
+      "symbiotic_communication_ratio": 0.28144,
+      "symbiotic_total_trm_events_per_seed": 28.0
     },
     {
-      "env_id": "tarware-large-2agvs-2pickers-partialobs-v1",
-      "comparison_json": "outputs_experiments/tarware-large-2agvs-2pickers-partialobs-v1/comparison_tarware-large-2agvs-2pickers-partialobs-v1.json",
-      "baseline_mean_deliveries": 17.839999999999996,
-      "symbiotic_mean_deliveries": 15.680000000000001,
-      "baseline_avg_wait_to_load_steps": 11.036489093228557,
-      "symbiotic_avg_wait_to_load_steps": 10.861104059751153,
-      "symbiotic_communication_ratio": 0.4848800000000001,
-      "symbiotic_total_trm_events_per_seed": 23.0
+      "env_id": "tarware-medium-2agvs-4pickers-partialobs-v1",
+      "comparison_json": "outputs_experiments/tarware-medium-2agvs-4pickers-partialobs-v1/comparison_tarware-medium-2agvs-4pickers-partialobs-v1.json",
+      "baseline_mean_deliveries": 19.0,
+      "symbiotic_mean_deliveries": 18.24,
+      "baseline_avg_wait_to_load_steps": 10.112225886299267,
+      "symbiotic_avg_wait_to_load_steps": 9.801953622904206,
+      "symbiotic_communication_ratio": 0.496,
+      "symbiotic_total_trm_events_per_seed": 19.4
+    },
+    {
+      "env_id": "tarware-large-2agvs-4pickers-partialobs-v1",
+      "comparison_json": "outputs_experiments/tarware-large-2agvs-4pickers-partialobs-v1/comparison_tarware-large-2agvs-4pickers-partialobs-v1.json",
+      "baseline_mean_deliveries": 18.44,
+      "symbiotic_mean_deliveries": 18.040000000000003,
+      "baseline_avg_wait_to_load_steps": 11.285748393935814,
+      "symbiotic_avg_wait_to_load_steps": 10.05454825587653,
+      "symbiotic_communication_ratio": 0.33927999999999997,
+      "symbiotic_total_trm_events_per_seed": 21.6
     }
   ]
 }

@@ -22,7 +22,7 @@
     "per_seed": [
       {
         "seed": 0,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122529_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182046_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
         "mean_deliveries": 16.2,
         "mean_clashes": 1.0,
         "mean_stucks": 0.0,
@@ -173,7 +173,7 @@
       },
       {
         "seed": 1,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122609_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182127_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
         "mean_deliveries": 19.4,
         "mean_clashes": 0.6,
         "mean_stucks": 0.0,
@@ -324,7 +324,7 @@
       },
       {
         "seed": 2,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122650_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182208_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
         "mean_deliveries": 18.0,
         "mean_clashes": 0.4,
         "mean_stucks": 0.0,
@@ -475,7 +475,7 @@
       },
       {
         "seed": 3,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122731_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182248_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
         "mean_deliveries": 20.4,
         "mean_clashes": 0.4,
         "mean_stucks": 0.0,
@@ -626,7 +626,7 @@
       },
       {
         "seed": 4,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122813_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182328_tarware-medium-2agvs-2pickers-partialobs-v1_NonSymbioticPlanner.jsonl",
         "mean_deliveries": 20.8,
         "mean_clashes": 0.8,
         "mean_stucks": 0.0,
@@ -794,7 +794,7 @@
     "per_seed": [
       {
         "seed": 0,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122549_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182107_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
         "mean_deliveries": 17.2,
         "mean_clashes": 1.2,
         "mean_stucks": 0.2,
@@ -1027,7 +1027,7 @@
       },
       {
         "seed": 1,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122629_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182149_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
         "mean_deliveries": 20.4,
         "mean_clashes": 1.2,
         "mean_stucks": 0.2,
@@ -1260,7 +1260,7 @@
       },
       {
         "seed": 2,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122710_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182228_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
         "mean_deliveries": 18.6,
         "mean_clashes": 1.2,
         "mean_stucks": 0.0,
@@ -1493,7 +1493,7 @@
       },
       {
         "seed": 3,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122752_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182308_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
         "mean_deliveries": 20.8,
         "mean_clashes": 1.2,
         "mean_stucks": 0.0,
@@ -1726,7 +1726,7 @@
       },
       {
         "seed": 4,
-        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_122833_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
+        "jsonl_path": "outputs_experiments/tarware-medium-2agvs-2pickers-partialobs-v1/20260308_182347_tarware-medium-2agvs-2pickers-partialobs-v1_SymbioticPlanner.jsonl",
         "mean_deliveries": 19.2,
         "mean_clashes": 2.0,
         "mean_stucks": 0.0,

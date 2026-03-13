@@ -1,5 +1,9 @@
 # ===== Experiment outputs =====
 outputs/
+outputs_compare/
+outputs_experiments/
+__pycache__/
+*.pyc
 
 # ===== OS files =====
 .DS_Store
@@ -7,3 +11,4 @@ outputs/
 # ===== Python cache =====
 __pycache__/
 *.pyc
+
