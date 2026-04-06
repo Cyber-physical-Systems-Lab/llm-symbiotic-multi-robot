@@ -31,45 +31,66 @@ def load_jsonl(path: str) -> list[dict]:
 
 
 def summarize_behavior(records: list[dict]) -> dict:
-    """Compute behavior and emergent-coordination metrics from JSONL records."""
+    """Compute behavior and coordination metrics from JSONL records."""
     records_by_episode = _group_records_by_episode(records)
+
     total_pair_switches = 0
-    total_load_events = 0
-    total_wait_steps = 0
+    total_cooperative_waiting_time = 0
     total_steps_with_clashes = 0
+    total_clashes = 0
     total_agv_episode_count = 0
+    total_completed_deliveries = 0
+
     rack_counter: Counter[int] = Counter()
     episode_breakdown: dict[int, dict[str, Any]] = {}
 
     for episode_idx, episode_records in records_by_episode.items():
         pair_switches, agv_count = _count_pair_switches(episode_records)
-        load_events, wait_steps = _compute_wait_to_load(episode_records)
+        cooperative_waiting_time = _compute_cooperative_waiting_time(episode_records)
         steps_with_clashes = _count_steps_with_clashes(episode_records)
+        clashes = _count_total_clashes(episode_records)
+        deliveries = _count_completed_deliveries(episode_records)
+
         _update_rack_counter(episode_records, rack_counter)
 
         total_pair_switches += pair_switches
         total_agv_episode_count += agv_count
-        total_load_events += load_events
-        total_wait_steps += wait_steps
+        total_cooperative_waiting_time += cooperative_waiting_time
         total_steps_with_clashes += steps_with_clashes
+        total_clashes += clashes
+        total_completed_deliveries += deliveries
 
         episode_breakdown[episode_idx] = {
             "pair_switches": pair_switches,
-            "load_events": load_events,
-            "avg_wait_to_load_steps": _safe_ratio(wait_steps, load_events),
+            "completed_deliveries": deliveries,
+            "total_cooperative_waiting_time": cooperative_waiting_time,
+            "avg_cooperative_waiting_time": _safe_ratio(cooperative_waiting_time, deliveries),
+            "total_clashes": clashes,
             "steps_with_clashes": steps_with_clashes,
         }
 
     episode_count = len(records_by_episode)
+
     return {
         "episodes": episode_count,
         "total_pair_switches": total_pair_switches,
         "avg_pair_switches_per_episode": _safe_ratio(total_pair_switches, episode_count),
-        "avg_pair_switches_per_agv_per_episode": _safe_ratio(total_pair_switches, total_agv_episode_count),
-        "total_load_events": total_load_events,
-        "avg_wait_to_load_steps": _safe_ratio(total_wait_steps, total_load_events),
+        "avg_pair_switches_per_agv_per_episode": _safe_ratio(
+            total_pair_switches, total_agv_episode_count
+        ),
+        "total_completed_deliveries": total_completed_deliveries,
+        "avg_completed_deliveries_per_episode": _safe_ratio(
+            total_completed_deliveries, episode_count
+        ),
+        "total_cooperative_waiting_time": total_cooperative_waiting_time,
+        "avg_cooperative_waiting_time": _safe_ratio(
+            total_cooperative_waiting_time, total_completed_deliveries
+        ),
+        "total_clashes": total_clashes,
         "total_steps_with_clashes": total_steps_with_clashes,
-        "most_frequent_rack_targets": [[loc_id, count] for loc_id, count in rack_counter.most_common(10)],
+        "most_frequent_rack_targets": [
+            [loc_id, count] for loc_id, count in rack_counter.most_common(10)
+        ],
         "episode_breakdown": episode_breakdown,
     }
 
@@ -87,8 +108,20 @@ def print_summary(summary: dict) -> None:
         "avg_pair_switches_per_agv_per_episode: "
         f"{float(summary.get('avg_pair_switches_per_agv_per_episode', 0.0)):.3f}"
     )
-    print(f"total_load_events: {summary.get('total_load_events', 0)}")
-    print(f"avg_wait_to_load_steps: {float(summary.get('avg_wait_to_load_steps', 0.0)):.3f}")
+    print(f"total_completed_deliveries: {summary.get('total_completed_deliveries', 0)}")
+    print(
+        "avg_completed_deliveries_per_episode: "
+        f"{float(summary.get('avg_completed_deliveries_per_episode', 0.0)):.3f}"
+    )
+    print(
+        "total_cooperative_waiting_time: "
+        f"{float(summary.get('total_cooperative_waiting_time', 0.0)):.3f}"
+    )
+    print(
+        "avg_cooperative_waiting_time: "
+        f"{float(summary.get('avg_cooperative_waiting_time', 0.0)):.3f}"
+    )
+    print(f"total_clashes: {summary.get('total_clashes', 0)}")
     print(f"total_steps_with_clashes: {summary.get('total_steps_with_clashes', 0)}")
     print(f"most_frequent_rack_targets: {summary.get('most_frequent_rack_targets', [])}")
 
@@ -98,9 +131,12 @@ def print_summary(summary: dict) -> None:
         for episode_idx in sorted(episode_breakdown):
             item = episode_breakdown[episode_idx]
             print(
-                f"  ep{episode_idx}: pair_switches={item.get('pair_switches', 0)} "
-                f"load_events={item.get('load_events', 0)} "
-                f"avg_wait_to_load_steps={float(item.get('avg_wait_to_load_steps', 0.0)):.3f} "
+                f"  ep{episode_idx}: "
+                f"pair_switches={item.get('pair_switches', 0)} "
+                f"completed_deliveries={item.get('completed_deliveries', 0)} "
+                f"total_cooperative_waiting_time={float(item.get('total_cooperative_waiting_time', 0.0)):.3f} "
+                f"avg_cooperative_waiting_time={float(item.get('avg_cooperative_waiting_time', 0.0)):.3f} "
+                f"total_clashes={item.get('total_clashes', 0)} "
                 f"steps_with_clashes={item.get('steps_with_clashes', 0)}"
             )
 
@@ -184,22 +220,33 @@ def _count_pair_switches(records: list[dict]) -> tuple[int, int]:
     return pair_switches, len(agv_ids_seen)
 
 
-def _compute_wait_to_load(records: list[dict]) -> tuple[int, int]:
-    """Compute load-event counts and cumulative wait-to-load steps for one episode."""
-    windows: dict[int, dict[str, int]] = {}
-    previous_states: dict[int, dict[str, Any]] = {}
-    load_events = 0
+def _compute_cooperative_waiting_time(records: list[dict]) -> int:
+    """
+    Compute cumulative cooperative waiting time for one episode.
+
+    Definition:
+    - AGV target is a non-goal location (i.e., rack or empty-rack target)
+    - AGV has already reached that target location
+    - cooperative phase is still unfinished:
+        * carrying == False  -> waiting for LOAD completion
+        * carrying == True   -> waiting for UNLOAD completion
+
+    This metric counts only waiting after arrival at target, not movement time.
+    """
     total_wait_steps = 0
 
     for record in records:
-        step_idx = _safe_int(record.get("step_idx", 0))
         state_min = record.get("state_min", {})
         if not isinstance(state_min, dict):
-            state_min = {}
-        goal_ids = {int(loc_id) for loc_id in state_min.get("goal_ids", []) if _is_int_like(loc_id)}
+            continue
+
         agents = state_min.get("agents", [])
         if not isinstance(agents, list):
-            agents = []
+            continue
+
+        goal_ids = {
+            int(loc_id) for loc_id in state_min.get("goal_ids", []) if _is_int_like(loc_id)
+        }
 
         for agent in agents:
             if not isinstance(agent, dict):
@@ -207,39 +254,23 @@ def _compute_wait_to_load(records: list[dict]) -> tuple[int, int]:
             if str(agent.get("type", "")) != "AGV":
                 continue
 
-            agv_id = _safe_int(agent.get("id", 0))
-            carrying = bool(agent.get("carrying", False))
             target = _safe_int(agent.get("target", 0))
-            prev = previous_states.get(agv_id, {})
-            prev_carrying = bool(prev.get("carrying", False))
-            prev_target = _safe_int(prev.get("target", 0))
+            if target == 0 or target in goal_ids:
+                continue
 
-            is_candidate_target = target != 0 and target not in goal_ids
-            if not carrying and is_candidate_target:
-                window = windows.get(agv_id)
-                if window is None or window["target"] != target:
-                    windows[agv_id] = {"target": target, "start_step": step_idx}
-            else:
-                if agv_id in windows and (target != windows[agv_id]["target"] or carrying):
-                    if not carrying:
-                        windows.pop(agv_id, None)
+            coords_yx = agent.get("coords_yx")
+            target_coords_yx = agent.get("target_coords_yx")
 
-            if agv_id in windows and not carrying and prev_target not in (0, windows[agv_id]["target"], target):
-                windows.pop(agv_id, None)
+            if not _same_coords(coords_yx, target_coords_yx):
+                continue
 
-            if not prev_carrying and carrying:
-                window = windows.get(agv_id)
-                if window is not None:
-                    load_events += 1
-                    total_wait_steps += max(0, step_idx - window["start_step"])
-                    windows.pop(agv_id, None)
+            # Once the AGV has reached a non-goal target and the cooperative
+            # phase is not yet completed, we count one waiting step.
+            # - not carrying -> LOAD waiting
+            # - carrying     -> UNLOAD waiting
+            total_wait_steps += 1
 
-            if agv_id in windows and not carrying and target != windows[agv_id]["target"]:
-                windows.pop(agv_id, None)
-
-            previous_states[agv_id] = {"carrying": carrying, "target": target}
-
-    return load_events, total_wait_steps
+    return total_wait_steps
 
 
 def _count_steps_with_clashes(records: list[dict]) -> int:
@@ -254,38 +285,71 @@ def _count_steps_with_clashes(records: list[dict]) -> int:
     return steps_with_clashes
 
 
-def _update_rack_counter(records: list[dict], rack_counter: Counter[int]) -> None:
-    """Accumulate AGV non-goal rack targets from final plans."""
+def _count_total_clashes(records: list[dict]) -> int:
+    """Count total clash events across all steps in one episode."""
+    total_clashes = 0
     for record in records:
-        comm_final_plan = record.get("comm_final_plan")
-        if not isinstance(comm_final_plan, dict):
+        info = record.get("info", {})
+        if not isinstance(info, dict):
             continue
-        macro_actions = comm_final_plan.get("macro_actions", [])
-        if not isinstance(macro_actions, list):
-            continue
+        total_clashes += _safe_int(info.get("clashes", 0))
+    return total_clashes
 
+
+def _count_completed_deliveries(records: list[dict]) -> int:
+    """Count completed deliveries in one episode by summing per-step shelf deliveries."""
+    total_deliveries = 0
+    for record in records:
+        info = record.get("info", {})
+        if not isinstance(info, dict):
+            continue
+        total_deliveries += _safe_int(info.get("shelf_deliveries", 0))
+    return total_deliveries
+
+
+def _update_rack_counter(records: list[dict], rack_counter: Counter[int]) -> None:
+    """
+    Accumulate AGV non-goal rack targets directly from state_min agents.
+    This is more reliable for your trace format than relying on final plans.
+    """
+    for record in records:
         state_min = record.get("state_min", {})
         if not isinstance(state_min, dict):
-            state_min = {}
+            continue
+
         goal_ids = {int(loc_id) for loc_id in state_min.get("goal_ids", []) if _is_int_like(loc_id)}
         agents = state_min.get("agents", [])
         if not isinstance(agents, list):
-            agents = []
-        agent_types = {
-            _safe_int(agent.get("id", 0)): str(agent.get("type", ""))
-            for agent in agents
-            if isinstance(agent, dict)
-        }
+            continue
 
-        for item in macro_actions:
-            if not isinstance(item, dict):
+        for agent in agents:
+            if not isinstance(agent, dict):
                 continue
-            agent_id = _safe_int(item.get("agent_id", 0))
-            location_id = _safe_int(item.get("location_id", 0))
-            if location_id == 0 or location_id in goal_ids:
+            if str(agent.get("type", "")) != "AGV":
                 continue
-            if agent_types.get(agent_id) == "AGV":
-                rack_counter[location_id] += 1
+
+            target = _safe_int(agent.get("target", 0))
+            if target == 0 or target in goal_ids:
+                continue
+
+            rack_counter[target] += 1
+
+
+def _same_coords(a: Any, b: Any) -> bool:
+    """Return whether two coordinate containers represent the same [y, x]."""
+    ayx = _normalize_coords_yx(a)
+    byx = _normalize_coords_yx(b)
+    if ayx is None or byx is None:
+        return False
+    return ayx == byx
+
+
+def _normalize_coords_yx(value: Any) -> tuple[int, int] | None:
+    """Normalize [y, x] style coordinates."""
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        if _is_int_like(value[0]) and _is_int_like(value[1]):
+            return int(value[0]), int(value[1])
+    return None
 
 
 def _safe_ratio(num: float, den: float) -> float:

@@ -44,6 +44,9 @@ class StateBuilder:
         cost_table = self._build_cost_table(env, agvs, pickers, candidate_loc_ids)
         valid_action_masks = self._valid_action_masks(env)
 
+        # 添加区域映射
+        rack_to_region, region_to_racks = self._build_rack_region_maps(env)
+
         return {
             "meta": {
                 "grid_size": [int(env.grid_size[0]), int(env.grid_size[1])],
@@ -52,12 +55,14 @@ class StateBuilder:
                 "num_pickers": int(env.num_pickers),
                 "num_goals": int(len(goals_all)),
             },
-            "agents": [self._serialize_agent(agent) for agent in agents_sorted],
+            "agents": [self._serialize_agent(env, agent) for agent in agents_sorted],
             "goal_ids": [int(loc_id) for loc_id in goal_ids],
             "requests_rack_ids_topk": [int(loc_id) for loc_id in request_ids],
             "empty_rack_ids_topk": [int(loc_id) for loc_id in empty_ids],
             "valid_action_masks": valid_action_masks,
             "cost_table": cost_table,
+            "rack_to_region": rack_to_region,
+            "region_to_racks": region_to_racks,
         }
 
     def _invert_location_map(self, env: Any) -> dict[tuple[int, int], int]:
@@ -173,9 +178,14 @@ class StateBuilder:
         )
         return [[int(value) for value in row] for row in np.asarray(mask).astype(int).tolist()]
 
-    def _serialize_agent(self, agent: Any) -> dict[str, Any]:
+    def _serialize_agent(self, env: Any, agent: Any) -> dict[str, Any]:
         carrying_shelf = getattr(agent, "carrying_shelf", None)
         target = getattr(agent, "target", 0) or 0
+        target_coords_yx = None
+        if int(target) != 0:
+            coords = env.action_id_to_coords_map.get(int(target))
+            if coords is not None:
+                target_coords_yx = [int(coords[0]), int(coords[1])]
         return {
             "id": int(agent.id),
             "type": self._agent_type_name(agent),
@@ -184,6 +194,7 @@ class StateBuilder:
             "carrying": bool(carrying_shelf),
             "has_delivered": bool(getattr(agent, "has_delivered", False)),
             "target": int(target),
+            "target_coords_yx": target_coords_yx,
         }
 
     def _agent_type_name(self, agent: Any) -> str:
@@ -220,6 +231,29 @@ class StateBuilder:
 
     def _manhattan(self, start: tuple[int, int], goal: tuple[int, int]) -> int:
         return abs(start[0] - goal[0]) + abs(start[1] - goal[1])
+    
+    # 在 StateBuilder 类中添加一个辅助方法
+    def _build_rack_region_maps(self, env: Any) -> tuple[dict[int, int], dict[int, list[int]]]:
+        """从环境获取 rack_groups，返回 rack_to_region 和 region_to_racks 映射。"""
+        rack_groups = getattr(env.unwrapped, "rack_groups", None)
+        if rack_groups is None:
+            return {}, {}
+
+        # 构建坐标到 action_id 的映射（坐标顺序 (x, y) -> action_id）
+        coord_to_action_id: dict[tuple[int, int], int] = {}
+        for action_id, (y, x) in env.action_id_to_coords_map.items():
+            coord_to_action_id[(x, y)] = action_id
+
+        rack_to_region: dict[int, int] = {}
+        region_to_racks: dict[int, list[int]] = {}
+        for region_idx, group in enumerate(rack_groups):
+            region_to_racks[region_idx] = []
+            for (x, y) in group:
+                action_id = coord_to_action_id.get((x, y))
+                if action_id is not None:
+                    rack_to_region[action_id] = region_idx
+                    region_to_racks[region_idx].append(action_id)
+        return rack_to_region, region_to_racks
 
 
 def _smoke_test() -> None:

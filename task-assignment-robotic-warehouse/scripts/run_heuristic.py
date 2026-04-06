@@ -45,7 +45,7 @@ def info_statistics(infos, global_episode_return, episode_returns):
     return last_info
 
 if __name__ == "__main__":
-    env = gym.make("tarware-extralarge-14agvs-7pickers-partialobs-v1")
+    env = gym.make("tarware-small-2agvs-2pickers-partialobs-v1")
     seed = args.seed
     completed_episodes = 0
     for i in range(args.num_episodes):

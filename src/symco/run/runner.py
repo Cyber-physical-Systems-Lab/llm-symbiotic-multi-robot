@@ -1,5 +1,5 @@
-"""Episode runner for TA-RWARE coordination experiments."""
 
+"""Episode runner for TA-RWARE coordination experiments."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -136,10 +136,15 @@ class EpisodeRunner:
         pickers_distance_travelled = 0
         agvs_idle_time = 0
         pickers_idle_time = 0
-        total_accepts = 0
+        total_recommends = 0
         total_declines = 0
-        total_alternative_proposals = 0
+        total_multi_option_recommends = 0
         communication_steps = 0
+        reachable_candidate_count = 0
+        total_candidate_count = 0
+        stage2_zero_option_requests = 0
+        zero_option_unreachable = 0
+        zero_option_no_idle_picker = 0
 
         while steps < self.config.max_steps:
             if self.config.render:
@@ -179,13 +184,24 @@ class EpisodeRunner:
             agvs_idle_time += int(info.get("agvs_idle_time", 0))
             pickers_idle_time += int(info.get("pickers_idle_time", 0))
             comm_payload = self._extract_comm_payload(planner)
-            accept_count, decline_count, alternative_count = self._count_response_decisions(
+            recommend_count, decline_count, multi_option_recommend_count = self._count_response_decisions(
                 comm_payload["comm_response"]
             )
-            total_accepts += accept_count
+            total_recommends += recommend_count
             total_declines += decline_count
-            total_alternative_proposals += alternative_count
+            total_multi_option_recommends += multi_option_recommend_count
             communication_steps += int(comm_payload["communication_used"])
+            comm_diagnostics = self._compute_comm_diagnostics(
+                state=state,
+                comm_request=comm_payload["comm_request"],
+                comm_response=comm_payload["comm_response"],
+                communication_used=bool(comm_payload["communication_used"]),
+            )
+            reachable_candidate_count += int(comm_diagnostics["reachable_candidate_count"])
+            total_candidate_count += int(comm_diagnostics["total_candidate_count"])
+            stage2_zero_option_requests += int(comm_diagnostics["stage2_zero_option_requests"])
+            zero_option_unreachable += int(comm_diagnostics["zero_option_unreachable"])
+            zero_option_no_idle_picker += int(comm_diagnostics["zero_option_no_idle_picker"])
 
             if jsonl_handle is not None:
                 record = {
@@ -205,12 +221,14 @@ class EpisodeRunner:
                     "comm_final_plan": comm_payload["comm_final_plan"],
                     "communication_used": comm_payload["communication_used"],
                     "planner_last_communication_triggered": comm_payload["planner_last_communication_triggered"],
+                    "planner_throttled_by_budget": comm_payload["planner_throttled_by_budget"],
                     "planner_has_request": comm_payload["planner_has_request"],
                     "planner_has_response": comm_payload["planner_has_response"],
                     "planner_has_final_plan": comm_payload["planner_has_final_plan"],
-                    "accept_count": accept_count,
+                    "comm_diagnostics": comm_diagnostics,
+                    "recommend_count": recommend_count,
                     "decline_count": decline_count,
-                    "alternative_proposed_count": alternative_count,
+                    "multi_option_recommend_count": multi_option_recommend_count,
                 }
                 jsonl_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
@@ -230,10 +248,20 @@ class EpisodeRunner:
             "pickers_distance_travelled": pickers_distance_travelled,
             "agvs_idle_time": agvs_idle_time,
             "pickers_idle_time": pickers_idle_time,
-            "total_accepts": total_accepts,
+            "total_recommends": total_recommends,
             "total_declines": total_declines,
-            "total_alternative_proposals": total_alternative_proposals,
+            "total_multi_option_recommends": total_multi_option_recommends,
             "communication_steps": communication_steps,
+            "reachable_candidate_count": reachable_candidate_count,
+            "total_candidate_count": total_candidate_count,
+            "reachability_rate": (
+                float(reachable_candidate_count) / float(total_candidate_count)
+                if total_candidate_count > 0
+                else 0.0
+            ),
+            "stage2_zero_option_requests": stage2_zero_option_requests,
+            "zero_option_unreachable": zero_option_unreachable,
+            "zero_option_no_idle_picker": zero_option_no_idle_picker,
         }
 
     def _sanitize_actions(
@@ -293,39 +321,170 @@ class EpisodeRunner:
         planner_last_communication_triggered = bool(
             getattr(planner, "last_communication_triggered", False)
         )
+        planner_throttled_by_budget = bool(
+            getattr(planner, "planner_throttled_by_budget", False)
+        )
         return {
             "comm_request": comm_request,
             "comm_response": comm_response,
             "comm_final_plan": comm_final_plan,
             "communication_used": planner_last_communication_triggered,
             "planner_last_communication_triggered": planner_last_communication_triggered,
+            "planner_throttled_by_budget": planner_throttled_by_budget,
             "planner_has_request": comm_request is not None,
             "planner_has_response": comm_response is not None,
             "planner_has_final_plan": comm_final_plan is not None,
         }
 
     def _count_response_decisions(self, comm_response_dict: Any) -> tuple[int, int, int]:
-        """Count ACCEPT, DECLINE, and PROPOSE_ALTERNATIVE responses."""
+        """Count RECOMMEND / DECLINE decisions and multi-option recommends."""
         if not isinstance(comm_response_dict, dict):
             return 0, 0, 0
+
         responses = comm_response_dict.get("responses", [])
         if not isinstance(responses, list):
             return 0, 0, 0
 
-        accept_count = 0
+        recommend_count = 0
         decline_count = 0
-        alternative_count = 0
+        multi_option_recommend_count = 0
+
         for item in responses:
             if not isinstance(item, dict):
                 continue
-            decision = item.get("decision")
-            if decision == "ACCEPT":
-                accept_count += 1
+            decision = str(item.get("decision", "")).upper()
+            options = item.get("options", [])
+            if not isinstance(options, list):
+                options = []
+
+            if decision == "RECOMMEND":
+                recommend_count += 1
+                if len(options) >= 2:
+                    multi_option_recommend_count += 1
             elif decision == "DECLINE":
                 decline_count += 1
-            elif decision == "PROPOSE_ALTERNATIVE":
-                alternative_count += 1
-        return accept_count, decline_count, alternative_count
+
+        return recommend_count, decline_count, multi_option_recommend_count
+
+    def _compute_comm_diagnostics(
+        self,
+        state: dict[str, Any],
+        comm_request: Any,
+        comm_response: Any,
+        communication_used: bool,
+    ) -> dict[str, Any]:
+        """Compute non-invasive communication diagnostics for one environment step."""
+        if not communication_used:
+            return {
+                "reachable_candidate_count": 0,
+                "total_candidate_count": 0,
+                "reachability_rate": 0.0,
+                "stage2_zero_option_requests": 0,
+                "zero_option_unreachable": 0,
+                "zero_option_no_idle_picker": 0,
+            }
+
+        requests = comm_request.get("requests", []) if isinstance(comm_request, dict) else []
+        responses = comm_response.get("responses", []) if isinstance(comm_response, dict) else []
+        if not isinstance(requests, list):
+            requests = []
+        if not isinstance(responses, list):
+            responses = []
+
+        picker_cost_table = state.get("cost_table", {}).get("picker", {})
+        agents = state.get("agents", [])
+        all_picker_ids = [
+            int(agent["id"])
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("type") == "PICKER" and agent.get("id") is not None
+        ]
+        idle_picker_ids = [
+            int(agent["id"])
+            for agent in agents
+            if isinstance(agent, dict)
+            and agent.get("type") == "PICKER"
+            and agent.get("id") is not None
+            and not bool(agent.get("busy", False))
+        ]
+
+        reachable_candidate_count = 0
+        total_candidate_count = 0
+        request_has_idle_reachable: dict[str, bool] = {}
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            request_id = request.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+
+            idle_reachable = False
+            for candidate in request.get("candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                rack_id = self._safe_int(candidate.get("rack_id"))
+                if rack_id <= 0:
+                    continue
+                total_candidate_count += 1
+                if self._candidate_reachable_by_any_picker(picker_cost_table, all_picker_ids, rack_id):
+                    reachable_candidate_count += 1
+                if self._candidate_reachable_by_any_picker(picker_cost_table, idle_picker_ids, rack_id):
+                    idle_reachable = True
+            request_has_idle_reachable[request_id] = idle_reachable
+
+        stage2_zero_option_requests = 0
+        zero_option_unreachable = 0
+        zero_option_no_idle_picker = 0
+        for response in responses:
+            if not isinstance(response, dict):
+                continue
+            request_id = response.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+            options = response.get("options", [])
+            if not isinstance(options, list):
+                options = []
+            if len(options) != 0:
+                continue
+            stage2_zero_option_requests += 1
+            if not idle_picker_ids:
+                zero_option_no_idle_picker += 1
+            elif not request_has_idle_reachable.get(request_id, False):
+                zero_option_unreachable += 1
+
+        return {
+            "reachable_candidate_count": reachable_candidate_count,
+            "total_candidate_count": total_candidate_count,
+            "reachability_rate": (
+                float(reachable_candidate_count) / float(total_candidate_count)
+                if total_candidate_count > 0
+                else 0.0
+            ),
+            "stage2_zero_option_requests": stage2_zero_option_requests,
+            "zero_option_unreachable": zero_option_unreachable,
+            "zero_option_no_idle_picker": zero_option_no_idle_picker,
+        }
+
+    def _candidate_reachable_by_any_picker(
+        self,
+        picker_cost_table: Any,
+        picker_ids: list[int],
+        rack_id: int,
+    ) -> bool:
+        """Return whether any listed picker has a finite cost entry to the rack."""
+        rack_key = str(int(rack_id))
+        if not isinstance(picker_cost_table, dict):
+            return False
+        for picker_id in picker_ids:
+            picker_cost_map = picker_cost_table.get(str(int(picker_id)), {})
+            if isinstance(picker_cost_map, dict) and rack_key in picker_cost_map:
+                return True
+        return False
+
+    def _safe_int(self, value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
 
     def _maybe_to_dict(self, value: Any) -> Any:
         """Return a JSON-serializable dict when the object exposes to_dict()."""

@@ -26,13 +26,19 @@ class SymbioticPlanner:
     """
 
     reasonable_eta_threshold = 12
-    candidate_limit = 2
+    candidate_limit = 3
 
     def __init__(self) -> None:
         self.step_counter: int = 0
         self.active_assignments: dict[int, dict[str, Any]] = {}
-        self.wait_timeout_steps: int = 20
+
+        # More conservative than before to reduce over-triggered re-communication.
+        self.wait_timeout_steps: int = 40
+        self.min_recommunication_gap_steps: int = 8
+
         self.last_communication_triggered: bool = False
+        self.last_communication_step: int = -10**9
+
         self.last_request: AGVRequest | None = None
         self.last_response: PickerResponse | None = None
         self.last_final_plan: FinalPlan | None = None
@@ -54,6 +60,8 @@ class SymbioticPlanner:
             return final_plan_to_action_list(self.last_final_plan, num_agents)
 
         self.last_communication_triggered = True
+        self.last_communication_step = self.step_counter
+
         request = self._build_agv_request(state)
         response = self._build_picker_response(state, request)
         final_plan = self._build_final_plan(state, request, response)
@@ -67,7 +75,15 @@ class SymbioticPlanner:
         return final_plan_to_action_list(final_plan, num_agents)
 
     def _should_trigger_communication(self, state: dict[str, Any]) -> bool:
-        """Return whether the current state warrants a communication round."""
+        """Return whether the current state warrants a communication round.
+
+        Trigger policy:
+        1. Always trigger on explicit coordination alert.
+        2. Trigger when an AGV truly needs a new decision (target == 0).
+        3. Trigger for an active cooperative assignment only when it appears stalled,
+           not merely because time has passed while the AGV is still busy and
+           progressing toward the cooperative rack.
+        """
         if bool(state.get("coordination_alert", False)):
             return True
 
@@ -76,15 +92,7 @@ class SymbioticPlanner:
         agents = self._sorted_agents(state)
         agents_by_id = {int(agent["id"]): agent for agent in agents}
 
-        for agv_id, assignment in self.active_assignments.items():
-            agv_state = agents_by_id.get(int(agv_id))
-            if agv_state is None:
-                continue
-            if self._is_assignment_completed(agv_state, assignment):
-                continue
-            if self.step_counter - int(assignment["start_step"]) >= self.wait_timeout_steps:
-                return True
-
+        # A genuinely new decision need should trigger immediately.
         for agent in agents:
             if agent.get("type") != "AGV":
                 continue
@@ -95,11 +103,47 @@ class SymbioticPlanner:
             has_delivered = bool(agent.get("has_delivered", False))
             target = int(agent.get("target", 0) or 0)
 
+            # Case 1: AGV has no shelf and no mission -> needs a load decision.
             if not carrying and target == 0 and request_racks:
                 return True
+
+            # Case 2: AGV delivered but still carries shelf and has no unload target.
             if carrying and has_delivered and target == 0 and empty_racks:
                 return True
+
+            # Case 3: AGV carries shelf toward goal but lost goal target.
             if carrying and not has_delivered and target == 0:
+                return True
+
+        # Avoid very frequent re-communication unless something clearly stalled.
+        recent_comm = (self.step_counter - self.last_communication_step) < self.min_recommunication_gap_steps
+
+        for agv_id, assignment in self.active_assignments.items():
+            agv_state = agents_by_id.get(int(agv_id))
+            if agv_state is None:
+                continue
+            if self._is_assignment_completed(agv_state, assignment):
+                continue
+
+            elapsed = self.step_counter - int(assignment["start_step"])
+            current_target = int(agv_state.get("target", 0) or 0)
+            expected_rack = int(assignment["rack_id"])
+            busy = bool(agv_state.get("busy", False))
+
+            # If AGV is still actively executing the same cooperative target,
+            # do not treat it as stalled yet.
+            if busy and current_target == expected_rack:
+                continue
+
+            # If communication happened very recently, do not immediately re-trigger
+            # unless the assignment has lost its target.
+            if recent_comm and current_target == expected_rack:
+                continue
+
+            # Re-trigger only when target is lost or the assignment has waited too long.
+            if current_target == 0:
+                return True
+            if elapsed >= self.wait_timeout_steps:
                 return True
 
         return False
@@ -159,7 +203,10 @@ class SymbioticPlanner:
                 )
             )
 
-        return AGVRequest(requests=requests, notes=["Rule-based AGV intentions over communicated candidates."])
+        return AGVRequest(
+            requests=requests,
+            notes=["Rule-based AGV intentions over communicated candidates."],
+        )
 
     def _build_picker_response(self, state: dict[str, Any], request: AGVRequest) -> PickerResponse:
         """Build picker-side responses over communicated candidate sets only.
@@ -197,7 +244,10 @@ class SymbioticPlanner:
                 )
             )
 
-        return PickerResponse(responses=responses, notes=["Rule-based picker responses over communicated candidates."])
+        return PickerResponse(
+            responses=responses,
+            notes=["Rule-based picker responses over communicated candidates."],
+        )
 
     def _build_final_plan(
         self,
@@ -319,14 +369,18 @@ class SymbioticPlanner:
             if self._is_assignment_completed(agv_state, assignment):
                 continue
             current_target = int(agv_state.get("target", 0) or 0)
-            if current_target != int(assignment["rack_id"]):
+            if current_target not in {0, int(assignment["rack_id"])}:
                 continue
             active_assignments[int(agv_id)] = assignment
 
         self.active_assignments = active_assignments
 
     def _register_assignments_from_final_plan(self, state: dict[str, Any], final_plan: FinalPlan) -> None:
-        """Register newly formed AGV-picker cooperative assignments."""
+        """Register newly formed AGV-picker cooperative assignments.
+
+        If the same assignment already exists, preserve its original start_step
+        instead of resetting it every time.
+        """
         agents = self._sorted_agents(state)
         agents_by_id = {int(agent["id"]): agent for agent in agents}
         goal_ids = {int(loc_id) for loc_id in state.get("goal_ids", [])}
@@ -345,6 +399,8 @@ class SymbioticPlanner:
             elif agent_state.get("type") == "PICKER":
                 location_to_pickers.setdefault(location_id, []).append(int(item.agent_id))
 
+        new_active_assignments = dict(self.active_assignments)
+
         for rack_id, agv_ids in location_to_agvs.items():
             picker_ids = sorted(location_to_pickers.get(rack_id, []))
             if not picker_ids:
@@ -356,12 +412,24 @@ class SymbioticPlanner:
                 purpose = self._cooperative_purpose_for_agv(agv_state)
                 if purpose is None:
                     continue
-                self.active_assignments[int(agv_id)] = {
+
+                existing = new_active_assignments.get(int(agv_id))
+                if (
+                    existing is not None
+                    and int(existing["picker_id"]) == int(picker_id)
+                    and int(existing["rack_id"]) == int(rack_id)
+                    and str(existing["purpose"]) == purpose
+                ):
+                    continue
+
+                new_active_assignments[int(agv_id)] = {
                     "picker_id": int(picker_id),
                     "rack_id": int(rack_id),
                     "purpose": purpose,
                     "start_step": self.step_counter,
                 }
+
+        self.active_assignments = new_active_assignments
 
     def _is_assignment_completed(self, agv_state: dict[str, Any], assignment: dict[str, Any]) -> bool:
         """Return whether a cooperative assignment has completed."""
@@ -409,12 +477,14 @@ class SymbioticPlanner:
         if not primary_added:
             ordered.append(scored[0])
 
+        ordered_rack_ids = {item[0] for item in ordered}
         for rack_id, cost in scored:
             if len(ordered) >= self.candidate_limit:
                 break
-            if rack_id in {item[0] for item in ordered}:
+            if rack_id in ordered_rack_ids:
                 continue
             ordered.append((rack_id, cost))
+            ordered_rack_ids.add(rack_id)
 
         return [CandidateRack(rack_id=rack_id, eta_agv=cost) for rack_id, cost in ordered]
 
@@ -435,7 +505,7 @@ class SymbioticPlanner:
             picker_id, eta_picker = picker_choice
             total_cost = int(candidate.eta_agv) + int(eta_picker)
             if best_total_cost is None or total_cost < best_total_cost or (
-                total_cost == best_total_cost and candidate.rack_id < best_choice[0]
+                total_cost == best_total_cost and (best_choice is None or candidate.rack_id < best_choice[0])
             ):
                 best_choice = (candidate.rack_id, picker_id, eta_picker)
                 best_total_cost = total_cost
@@ -464,7 +534,7 @@ class SymbioticPlanner:
                 continue
 
             if best_eta is None or eta_picker < best_eta or (
-                eta_picker == best_eta and picker_id < best_choice[0]
+                eta_picker == best_eta and (best_choice is None or picker_id < best_choice[0])
             ):
                 best_choice = (picker_id, eta_picker)
                 best_eta = eta_picker
