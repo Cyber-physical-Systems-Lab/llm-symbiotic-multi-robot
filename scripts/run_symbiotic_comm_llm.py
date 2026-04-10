@@ -20,6 +20,7 @@ Example:
     --stage2_picker_options_per_rack 3 --stage2_max_options_per_request 2 \
     --wait_timeout_steps 40 --min_recommunication_gap_steps 8 \
     --unique_picker 1 --unique_rack 1 \
+    --enable_rationale \
     --debug
 """
 
@@ -141,6 +142,13 @@ def parse_args() -> argparse.Namespace:
         help="Enforce unique rack per step among assigned requests (0/1).",
     )
 
+    # Planner: Prompt condition
+    parser.add_argument(
+        "--enable_rationale",
+        action="store_true",
+        help="Enable V1 prompts with rationale generation and propagation.",
+    )
+
     # Planner debug
     parser.add_argument("--debug", action="store_true", help="Print prompts and raw/sanitized outputs.")
     return parser.parse_args()
@@ -174,6 +182,7 @@ def build_planner_config(args: argparse.Namespace) -> SymbioticCommLLMPlannerCon
         min_recommunication_gap_steps=args.min_recommunication_gap_steps,
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),
+        enable_rationale=args.enable_rationale,
         debug=args.debug,
     )
 

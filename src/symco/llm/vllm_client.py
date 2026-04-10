@@ -18,7 +18,7 @@ class VLLMConfig:
     api_key: str = "EMPTY"
     timeout_sec: int = 120
     temperature: float = 0.1
-    max_tokens: int = 512
+    max_tokens: int = 256
 
 
 def load_vllm_config_from_env() -> VLLMConfig:
@@ -33,7 +33,7 @@ def load_vllm_config_from_env() -> VLLMConfig:
     api_key = os.environ.get("SYMCO_VLLM_API_KEY", "EMPTY")
     timeout_sec = _parse_int_env("SYMCO_VLLM_TIMEOUT_SEC", default=120)
     temperature = _parse_float_env("SYMCO_VLLM_TEMPERATURE", default=0.1)
-    max_tokens = _parse_int_env("SYMCO_VLLM_MAX_TOKENS", default=512)
+    max_tokens = _parse_int_env("SYMCO_VLLM_MAX_TOKENS", default=256)
 
     return VLLMConfig(
         base_url=base_url.rstrip("/"),

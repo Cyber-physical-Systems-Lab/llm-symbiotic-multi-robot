@@ -42,6 +42,14 @@ import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from symco.llm.vllm_client import VLLMChatClient, load_vllm_config_from_env
+from symco.planners.prompts import (
+    stage1_system_prompt_v0,
+    stage1_system_prompt_v1,
+    stage2_system_prompt_v0,
+    stage2_system_prompt_v1,
+    stage3_system_prompt_v0,
+    stage3_system_prompt_v1,
+)
 from symco.planners.symbiotic_planner import SymbioticPlanner as RuleSymbioticPlanner
 
 
@@ -75,6 +83,7 @@ class SymbioticCommLLMPlannerConfig:
     # Output constraints
     unique_picker: bool = True
     unique_rack: bool = True
+    enable_rationale: bool = False
 
     # Debug
     debug: bool = False
@@ -99,6 +108,7 @@ class SymbioticCommLLMPlanner:
 
     def __init__(self, config: SymbioticCommLLMPlannerConfig | None = None):
         self.config = config or SymbioticCommLLMPlannerConfig()
+        self.enable_rationale = getattr(self.config, "enable_rationale", False)
 
         vcfg = load_vllm_config_from_env()
         self.agv_client = VLLMChatClient(vcfg)
@@ -551,6 +561,55 @@ class SymbioticCommLLMPlanner:
                 region = self.rack_to_region[rack_id]
                 region_load[region] = region_load.get(region, 0) + 1
         return region_load
+
+    def _count_nearby_idle_pickers(
+        self,
+        state: dict[str, Any],
+        rack_coords: tuple[int, int],
+        radius: int = 15,
+    ) -> int:
+        """Count idle pickers within a Manhattan radius of the rack coordinates.
+
+        `rack_coords` must be in `(x, y)` order. If coordinates are unavailable
+        or malformed, return 0 conservatively.
+        """
+        try:
+            rack_x, rack_y = int(rack_coords[0]), int(rack_coords[1])
+        except (TypeError, ValueError, IndexError):
+            return 0
+
+        count = 0
+        for agent in state.get("agents", []):
+            if not isinstance(agent, dict):
+                continue
+            if agent.get("type") != "PICKER" or bool(agent.get("busy", False)):
+                continue
+
+            picker_x: Optional[int] = None
+            picker_y: Optional[int] = None
+            coords_yx = agent.get("coords_yx")
+            if isinstance(coords_yx, (list, tuple)) and len(coords_yx) == 2:
+                try:
+                    picker_y = int(coords_yx[0])
+                    picker_x = int(coords_yx[1])
+                except (TypeError, ValueError):
+                    picker_x = None
+                    picker_y = None
+            elif "x" in agent and "y" in agent:
+                try:
+                    picker_x = int(agent["x"])
+                    picker_y = int(agent["y"])
+                except (TypeError, ValueError):
+                    picker_x = None
+                    picker_y = None
+
+            if picker_x is None or picker_y is None:
+                continue
+
+            if abs(picker_x - rack_x) + abs(picker_y - rack_y) <= int(radius):
+                count += 1
+
+        return count
     
 
     def _debug_print_delivery_flow(
@@ -722,9 +781,12 @@ class SymbioticCommLLMPlanner:
     def _build_stage1_payload(self, state: dict[str, Any], batch_requests: list[dict[str, Any]]) -> dict[str, Any]:
         agents = self._sorted_agents(state)
         idle_agvs = sum(1 for a in agents if a.get("type") == "AGV" and not bool(a.get("busy", False)))
+        idle_pickers = sum(1 for a in agents if a.get("type") == "PICKER" and not bool(a.get("busy", False)))
+        picker_scarcity = "low" if idle_pickers >= 2 else "high"
 
         # 计算区域负载
         region_load = self._compute_region_load()
+        location_coords_xy = state.get("location_coords_xy", {})
 
 
         valid_masks = state.get("valid_action_masks", [])
@@ -752,14 +814,27 @@ class SymbioticCommLLMPlanner:
             scored.sort(key=lambda t: (t[1], t[0]))
             scored = scored[: max(0, int(self.config.stage1_pool_k))]
 
-            candidates = [
-                {
-                    "rack_id": rid,
-                    "eta_agv": eta,
-                    "region_id": self.rack_to_region.get(rid, -1) if self.rack_to_region else -1
-                }
-                for rid, eta in scored
-            ]
+            candidates = []
+            for rid, eta in scored:
+                coords_xy = location_coords_xy.get(str(int(rid)))
+                nearby_idle_pickers = 0
+                if isinstance(coords_xy, (list, tuple)) and len(coords_xy) == 2:
+                    try:
+                        nearby_idle_pickers = self._count_nearby_idle_pickers(
+                            state,
+                            (int(coords_xy[0]), int(coords_xy[1])),
+                        )
+                    except (TypeError, ValueError):
+                        nearby_idle_pickers = 0
+
+                candidates.append(
+                    {
+                        "rack_id": rid,
+                        "eta_agv": eta,
+                        "region_id": self.rack_to_region.get(rid, -1) if self.rack_to_region else -1,
+                        "nearby_idle_pickers": int(nearby_idle_pickers),
+                    }
+                )
             
             if not candidates:
                 continue
@@ -776,6 +851,8 @@ class SymbioticCommLLMPlanner:
         return {
             "system_pressure": {
                 "idle_agvs": int(idle_agvs),
+                "idle_pickers": int(idle_pickers),
+                "picker_scarcity": picker_scarcity,
                 "active_cooperative_assignments": int(len(self.active_assignments)),
                 "region_load": region_load,
             },
@@ -869,10 +946,11 @@ class SymbioticCommLLMPlanner:
                     "purpose": str(meta["purpose"]),
                     "primary_rack_id": int(primary),
                     "backup_rack_ids": backups,
-                    "reason": reason,
                     "candidates": meta["candidates"],  # keep minimal for later building
                 }
             )
+            if self.enable_rationale:
+                sanitized[-1]["reason"] = reason
             seen.add(request_id)
 
         return sanitized
@@ -971,6 +1049,8 @@ class SymbioticCommLLMPlanner:
                     "options_count": int(len(request_options)),
                 }
             )
+            if self.enable_rationale:
+                requests_payload[-1]["agv_reason"] = str(req.get("reason", ""))
 
         return {
             "system_pressure": {
@@ -1077,9 +1157,10 @@ class SymbioticCommLLMPlanner:
                         "chosen_option_id": None,
                         "chosen_rack_id": None,
                         "chosen_picker_id": None,
-                        "reason": reason,
                     }
                 )
+                if self.enable_rationale:
+                    sanitized[-1]["reason"] = reason
                 continue
 
             selected: dict[str, int] | None = None
@@ -1108,9 +1189,10 @@ class SymbioticCommLLMPlanner:
                         "chosen_option_id": None,
                         "chosen_rack_id": None,
                         "chosen_picker_id": None,
-                        "reason": "Invalid response",
                     }
                 )
+                if self.enable_rationale:
+                    sanitized[-1]["reason"] = "Invalid response"
                 continue
 
             sync_cost = max(int(selected["eta_agv"]), int(selected["eta_picker"]))
@@ -1132,9 +1214,10 @@ class SymbioticCommLLMPlanner:
                     "chosen_option_id": str(chosen_option_id) if isinstance(chosen_option_id, str) else None,
                     "chosen_rack_id": int(selected["rack_id"]),
                     "chosen_picker_id": int(selected["picker_id"]),
-                    "reason": str(raw_item.get("reason", "")) if raw_item.get("reason") is not None else "",
                 }
             )
+            if self.enable_rationale:
+                sanitized[-1]["reason"] = str(raw_item.get("reason", "")) if raw_item.get("reason") is not None else ""
 
         return sanitized
 
@@ -1162,6 +1245,8 @@ class SymbioticCommLLMPlanner:
                 "agv_id": int(req.get("agv_id", 0)),
                 "purpose": str(req.get("purpose", "")),
             }
+            if self.enable_rationale:
+                req_meta[rid]["agv_reason"] = str(req.get("agv_reason", ""))
 
         responses_by_id = {
             r["request_id"]: r
@@ -1199,6 +1284,9 @@ class SymbioticCommLLMPlanner:
                     "options": compact_options,
                 }
             )
+            if self.enable_rationale:
+                requests_payload[-1]["agv_reason"] = str(meta.get("agv_reason", ""))
+                requests_payload[-1]["picker_reason"] = str(resp.get("reason", ""))
 
         sys_pressure = stage2_payload.get("system_pressure", {})
         if not isinstance(sys_pressure, dict):
@@ -1494,21 +1582,9 @@ class SymbioticCommLLMPlanner:
     # ----------------------------
 
     def _stage1_system_prompt(self) -> str:
-        return (
-            "You are the AGV-group coordinator (proposal stage). "
-            "For EACH request, pick ONE primary rack and up to TWO backup racks from the provided candidates. "
-            "Objective: produce a good AGV-side proposal bundle (NOT final global optimum). "
-            "Guidelines: "
-            "1) Try to minimize the maximum eta_agv among selected primary racks. "
-            "2) If it does not worsen the maximum eta_agv, avoid duplicate primary racks across requests. "
-            "3) Choose backups that are feasible and near (low eta_agv), different from primary. "
-            "4) SPATIAL LOAD BALANCING: You will receive region_load (number of AGVs already assigned to each region). "
-            "   Avoid concentrating proposals in the same region, especially if that region already has high load. "
-            "   When multiple racks have similar eta_agv, prefer those in regions with lower current load. "
-            "Constraints: primary/backup rack_id MUST come from that request's candidates. "
-            "Return JSON only, exactly: "
-            '{"requests":[{"request_id":"...","primary_rack_id":37,"backup_rack_ids":[52,41],"reason":""}]}'
-        )
+        if self.enable_rationale:
+            return stage1_system_prompt_v1()
+        return stage1_system_prompt_v0()
 
     def _stage1_user_prompt(self, payload: dict[str, Any]) -> str:
         minimal = {
@@ -1519,7 +1595,12 @@ class SymbioticCommLLMPlanner:
                     "agv_id": r.get("agv_id"),
                     "purpose": r.get("purpose"),
                     "candidates": [
-                        {"rack_id": c.get("rack_id"), "eta_agv": c.get("eta_agv"), "region_id": c.get("region_id")}
+                        {
+                            "rack_id": c.get("rack_id"),
+                            "eta_agv": c.get("eta_agv"),
+                            "region_id": c.get("region_id"),
+                            "nearby_idle_pickers": c.get("nearby_idle_pickers"),
+                        }
                         for c in r.get("candidates", [])
                         if isinstance(c, dict)
                     ],
@@ -1531,14 +1612,9 @@ class SymbioticCommLLMPlanner:
         return json.dumps(minimal, ensure_ascii=True)
 
     def _stage2_system_prompt(self) -> str:
-        return (
-            "You are the Picker-group coordinator. "
-            "For each request, you will receive at most two feasible options. "
-            "Choose exactly one action per request: RECOMMEND one provided option, or DECLINE. "
-            "Do not invent racks, pickers, or option ids. Use only the provided options. "
-            "Return JSON only, exactly: "
-            '{"responses":[{"request_id":"...","decision":"RECOMMEND","chosen_option_id":"OPT_0","reason":""}]}'
-        )
+        if self.enable_rationale:
+            return stage2_system_prompt_v1()
+        return stage2_system_prompt_v0()
 
     def _stage2_user_prompt(self, payload: dict[str, Any]) -> str:
         minimal_reqs = []
@@ -1562,6 +1638,8 @@ class SymbioticCommLLMPlanner:
                     ],
                 }
             )
+            if self.enable_rationale:
+                minimal_reqs[-1]["agv_reason"] = r.get("agv_reason", "")
 
         minimal = {
             "system_pressure": payload.get("system_pressure", {}),
@@ -1570,28 +1648,30 @@ class SymbioticCommLLMPlanner:
         return json.dumps(minimal, ensure_ascii=True)
 
     def _stage3_system_prompt(self) -> str:
-        return (
-            "You are the final arbitration planner for ONE warehouse step. "
-            "You will receive, for each request, up to TWO feasible options (rack_id, picker_id) with metrics. "
-            "Choose a conflict-free set of assignments. "
-            "Constraints: "
-            "1) Use ONLY the provided options for each request (do not invent racks/pickers). "
-            "2) Respect unique_picker and unique_rack if true. "
-            "Objective (lexicographic): "
-            "A) maximize number of assigned requests, "
-            "B) minimize sum sync_cost, "
-            "C) minimize sum eta_gap. "
-            "Keep fixed_direct_actions unchanged (they are executed regardless). "
-            "Return JSON only, exactly: "
-            '{"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."],"explanation":""}'
-        )
+        if self.enable_rationale:
+            return stage3_system_prompt_v1()
+        return stage3_system_prompt_v0()
 
     def _stage3_user_prompt(self, payload: dict[str, Any]) -> str:
+        requests = []
+        for request in payload.get("requests", []):
+            if not isinstance(request, dict):
+                continue
+            item = {
+                "request_id": request.get("request_id"),
+                "agv_id": request.get("agv_id"),
+                "purpose": request.get("purpose"),
+                "options": request.get("options", []),
+            }
+            if self.enable_rationale:
+                item["agv_reason"] = request.get("agv_reason", "")
+                item["picker_reason"] = request.get("picker_reason", "")
+            requests.append(item)
         minimal = {
             "system_pressure": payload.get("system_pressure", {}),
             "constraints": payload.get("constraints", {}),
             "fixed_direct_actions": payload.get("fixed_direct_actions", []),
-            "requests": payload.get("requests", []),
+            "requests": requests,
         }
         return json.dumps(minimal, ensure_ascii=True)
 

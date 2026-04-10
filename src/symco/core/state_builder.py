@@ -63,6 +63,10 @@ class StateBuilder:
             "cost_table": cost_table,
             "rack_to_region": rack_to_region,
             "region_to_racks": region_to_racks,
+            "location_coords_xy": {
+                str(int(loc_id)): [int(coords[1]), int(coords[0])]
+                for loc_id, coords in env.action_id_to_coords_map.items()
+            },
         }
 
     def _invert_location_map(self, env: Any) -> dict[tuple[int, int], int]:
