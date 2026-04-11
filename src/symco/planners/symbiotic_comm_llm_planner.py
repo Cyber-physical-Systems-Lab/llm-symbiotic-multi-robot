@@ -25,8 +25,8 @@ Strictness policy:
 
 Stages:
   Stage 1 (AGV LLM): propose per-request primary + backups from per-request candidates (eta_agv only).
-  Stage 2 (Picker LLM): output per-request recommendations (<=2 options), not binding assignments.
-  Stage 3 (Finalizer LLM): choose a conflict-free global assignment set from Stage2 options.
+  Stage 2 (Picker LLM): output per-option picker-side support feedback (<=3 options), not binding assignments.
+  Stage 3 (Commitment LLM): revise or retain AGV proposals under picker feedback.
 
 Environment assumptions:
 - `state` is produced by `StateBuilder` and contains:
@@ -73,7 +73,7 @@ class SymbioticCommLLMPlannerConfig:
     stage1_pool_k: int = 8                   # candidates per request into Stage1 prompt
     stage1_backups: int = 2                  # backups per request from the model (sanitizer caps)
     stage2_picker_options_per_rack: int = 3  # top P pickers per rack candidate (by eta_picker)
-    stage2_max_options_per_request: int = 2  # model outputs <=2 joint options per request (sanitizer caps)
+    stage2_max_options_per_request: int = 3  # keep up to 3 joint options per request (align with Stage1 candidates)
 
     # Communication triggering
     wait_timeout_steps: int = 40
@@ -236,7 +236,7 @@ class SymbioticCommLLMPlanner:
         if not stage1_bundle:
             return self._fallback_whole_plan(state, reason="Stage1 produced no valid proposals.")
 
-        # -------- Stage 2 (Picker LLM): feasibility + options (<=2/request) --------
+        # -------- Stage 2 (Picker LLM): support feedback over bounded options (<=3/request) --------
         stage2_payload = self._build_stage2_payload(state, stage1_bundle)
         if self.config.debug:
             print("STAGE2_PAYLOAD\n", json.dumps(stage2_payload, ensure_ascii=False, indent=2))
@@ -258,7 +258,7 @@ class SymbioticCommLLMPlanner:
         #self.last_response = {"responses": stage2_responses}
         self.last_response = _DictMessage({"responses": stage2_responses})
 
-        # -------- Stage 3 (Finalizer LLM): global assignment from options --------
+        # -------- Stage 3 (Commitment LLM): retain / revise / skip within bounded options --------
         stage3_payload = self._build_stage3_payload(state, stage2_payload, stage2_responses)
         if self.config.debug:
             print("STAGE3_PAYLOAD\n", json.dumps(stage3_payload, ensure_ascii=False, indent=2))
@@ -861,7 +861,17 @@ class SymbioticCommLLMPlanner:
 
     def _sanitize_stage1_output(self, payload: dict[str, Any], raw: dict[str, Any]) -> list[dict[str, Any]]:
         """
-        Strict semantic-preserving sanitization:
+        Strict semantic-preserving sanitization.
+
+        Stage 1 model output is intentionally minimal:
+        - request_id
+        - primary_rack_id
+        - backup_rack_ids
+        - reason (V1 only)
+
+        Request metadata and candidate details are restored from the payload
+        during sanitization to reduce output tokens and improve schema stability.
+
         - Must output list in raw["requests"]
         - Each request_id must exist
         - primary/backup must come from communicated candidates
@@ -1063,14 +1073,24 @@ class SymbioticCommLLMPlanner:
 
     def _sanitize_stage2_output(self, payload: dict[str, Any], raw: dict[str, Any]) -> list[dict[str, Any]]:
         """
-        Strict semantic-preserving sanitization:
+        Strict Stage 2 sanitization for per-option picker-side feedback:
+        Stage 2 model output is intentionally minimal:
+        - request_id
+        - overall_support
+        - option_feedback
+        - reason
+
+        Option metadata is restored from the payload during sanitization to
+        reduce output tokens and improve schema stability.
+
         - raw["responses"] must be a list (or wrapper {"response": {...}})
         - each response.request_id must exist
-        - decision must be DECLINE or RECOMMEND
-        - RECOMMEND must match exactly one communicated option by chosen_option_id
-          or by (rack_id, picker_id)
-        - options_count is carried into the sanitized trace for analysis
-        - no default recommendation repair: invalid output becomes DECLINE
+        - option_feedback entries must reference only communicated option_ids
+        - support_level must be STRONG / WEAK / REJECT
+        - missing options are filled as REJECT
+        - if no legal option feedback exists for a request, all options become REJECT
+        - overall_support is recomputed conservatively from the sanitized support levels
+        - ``options`` is retained only as a temporary downstream compatibility layer
         """
         if not isinstance(raw, dict):
             return []
@@ -1086,7 +1106,7 @@ class SymbioticCommLLMPlanner:
         # Build allowed maps
         req_map: dict[str, dict[str, Any]] = {}
         allowed_options_by_req: dict[str, dict[str, dict[str, int]]] = {}
-        allowed_pairs_by_req: dict[str, dict[tuple[int, int], dict[str, int]]] = {}
+        ordered_option_ids_by_req: dict[str, list[str]] = {}
         options_count_by_req: dict[str, int] = {}
 
         for req in payload.get("requests", []):
@@ -1097,7 +1117,7 @@ class SymbioticCommLLMPlanner:
                 continue
             req_map[rid] = req
             option_id_map: dict[str, dict[str, int]] = {}
-            pair_map: dict[tuple[int, int], dict[str, int]] = {}
+            ordered_option_ids: list[str] = []
             for option in req.get("options", []):
                 if not isinstance(option, dict):
                     continue
@@ -1117,9 +1137,9 @@ class SymbioticCommLLMPlanner:
                     "eta_picker": int(eta_picker),
                 }
                 option_id_map[option_id] = data
-                pair_map[(int(rack_id), int(picker_id))] = data
+                ordered_option_ids.append(option_id)
             allowed_options_by_req[rid] = option_id_map
-            allowed_pairs_by_req[rid] = pair_map
+            ordered_option_ids_by_req[rid] = ordered_option_ids
             options_count_by_req[rid] = int(len(option_id_map))
 
         # index raw by request_id (first occurrence)
@@ -1132,92 +1152,110 @@ class SymbioticCommLLMPlanner:
                 raw_by_id[rid] = item
 
         sanitized: list[dict[str, Any]] = []
-        for rid, req in req_map.items():
+        for rid in req_map:
             raw_item = raw_by_id.get(rid, {})
-            decision = raw_item.get("decision", "DECLINE")
-            if decision is None:
-                decision = "DECLINE"
-            decision = str(decision).upper()
-            if decision not in {"DECLINE", "RECOMMEND"}:
-                decision = "DECLINE"
             allowed_by_option_id = allowed_options_by_req.get(rid, {})
-            allowed_by_pair = allowed_pairs_by_req.get(rid, {})
+            ordered_option_ids = ordered_option_ids_by_req.get(rid, [])
             options_count = int(options_count_by_req.get(rid, 0))
+            reason = str(raw_item.get("reason", "")) if raw_item.get("reason") is not None else ""
 
             if options_count == 0:
-                reason = str(raw_item.get("reason", "")) if raw_item.get("reason") is not None else ""
-                if decision == "RECOMMEND":
-                    reason = "Invalid response"
                 sanitized.append(
                     {
                         "request_id": rid,
-                        "decision": "DECLINE",
+                        "overall_support": "DO_NOT_SUPPORT",
+                        "option_feedback": [],
+                        "reason": reason,
                         "options": [],
                         "options_count": 0,
-                        "chosen_option_id": None,
-                        "chosen_rack_id": None,
-                        "chosen_picker_id": None,
                     }
                 )
-                if self.enable_rationale:
-                    sanitized[-1]["reason"] = reason
                 continue
 
-            selected: dict[str, int] | None = None
-            chosen_option_id = raw_item.get("chosen_option_id")
-            if decision == "RECOMMEND" and isinstance(chosen_option_id, str):
-                selected = allowed_by_option_id.get(chosen_option_id)
+            raw_feedback = raw_item.get("option_feedback", [])
+            if not isinstance(raw_feedback, list):
+                raw_feedback = []
 
-            if decision == "RECOMMEND" and selected is None:
-                rack_id = self._safe_int(raw_item.get("rack_id"))
-                picker_id = self._safe_int(raw_item.get("picker_id"))
-                if rack_id > 0 and picker_id > 0:
-                    selected = allowed_by_pair.get((int(rack_id), int(picker_id)))
-                    if selected is not None:
-                        for option_id, option_data in allowed_by_option_id.items():
-                            if option_data == selected:
-                                chosen_option_id = option_id
-                                break
+            valid_feedback_by_option_id: dict[str, str] = {}
+            for item in raw_feedback:
+                if not isinstance(item, dict):
+                    continue
+                option_id = item.get("option_id")
+                support_level = item.get("support_level")
+                if not isinstance(option_id, str):
+                    continue
+                if option_id not in allowed_by_option_id:
+                    continue
+                if support_level is None:
+                    continue
+                support_level = str(support_level).upper()
+                if support_level not in {"STRONG", "WEAK", "REJECT"}:
+                    continue
+                valid_feedback_by_option_id[option_id] = support_level
 
-            if decision != "RECOMMEND" or selected is None:
+            option_feedback: list[dict[str, Any]] = []
+            compatible_options: list[dict[str, Any]] = []
+
+            if not valid_feedback_by_option_id:
+                for option_id in ordered_option_ids:
+                    option_feedback.append(
+                        {
+                            "option_id": option_id,
+                            "support_level": "REJECT",
+                        }
+                    )
                 sanitized.append(
                     {
                         "request_id": rid,
-                        "decision": "DECLINE",
+                        "overall_support": "DO_NOT_SUPPORT",
+                        "option_feedback": option_feedback,
+                        "reason": reason,
+                        # Temporary compatibility layer for unchanged Stage 3.
                         "options": [],
                         "options_count": options_count,
-                        "chosen_option_id": None,
-                        "chosen_rack_id": None,
-                        "chosen_picker_id": None,
                     }
                 )
-                if self.enable_rationale:
-                    sanitized[-1]["reason"] = "Invalid response"
                 continue
 
-            sync_cost = max(int(selected["eta_agv"]), int(selected["eta_picker"]))
-            eta_gap = abs(int(selected["eta_agv"]) - int(selected["eta_picker"]))
+            has_positive_support = False
+            for option_id in ordered_option_ids:
+                support_level = valid_feedback_by_option_id.get(option_id, "REJECT")
+                option_feedback.append(
+                    {
+                        "option_id": option_id,
+                        "support_level": support_level,
+                    }
+                )
+                if support_level not in {"STRONG", "WEAK"}:
+                    continue
+                has_positive_support = True
+                option_data = allowed_by_option_id[option_id]
+                eta_agv = int(option_data["eta_agv"])
+                eta_picker = int(option_data["eta_picker"])
+                compatible_options.append(
+                    {
+                        "option_id": option_id,
+                        "rack_id": int(option_data["rack_id"]),
+                        "picker_id": int(option_data["picker_id"]),
+                        "eta_agv": eta_agv,
+                        "eta_picker": eta_picker,
+                        "sync_cost": max(eta_agv, eta_picker),
+                        "eta_gap": abs(eta_agv - eta_picker),
+                        "support_level": support_level,
+                    }
+                )
+
             sanitized.append(
                 {
                     "request_id": rid,
-                    "decision": "RECOMMEND",
-                    "options": [
-                        {
-                            "rack_id": int(selected["rack_id"]),
-                            "picker_id": int(selected["picker_id"]),
-                            "eta_picker": int(selected["eta_picker"]),
-                            "sync_cost": int(sync_cost),
-                            "eta_gap": int(eta_gap),
-                        }
-                    ],
+                    "overall_support": "SUPPORT" if has_positive_support else "DO_NOT_SUPPORT",
+                    "option_feedback": option_feedback,
+                    "reason": reason,
+                    # Temporary compatibility layer for unchanged Stage 3.
+                    "options": compatible_options,
                     "options_count": options_count,
-                    "chosen_option_id": str(chosen_option_id) if isinstance(chosen_option_id, str) else None,
-                    "chosen_rack_id": int(selected["rack_id"]),
-                    "chosen_picker_id": int(selected["picker_id"]),
                 }
             )
-            if self.enable_rationale:
-                sanitized[-1]["reason"] = str(raw_item.get("reason", "")) if raw_item.get("reason") is not None else ""
 
         return sanitized
 
@@ -1231,8 +1269,22 @@ class SymbioticCommLLMPlanner:
         stage2_payload: dict[str, Any],
         stage2_responses: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Compress to request-level options (<=2 each), include constraints and fixed actions."""
+        """Build Stage 3 revision payload from Stage 1 proposal summary plus Stage 2 feedback."""
         fixed_direct_actions = self._build_fixed_direct_actions(state)
+
+        stage1_requests = []
+        if isinstance(self.last_request, _DictMessage):
+            stage1_requests = self.last_request.to_dict().get("requests", [])
+        if not isinstance(stage1_requests, list):
+            stage1_requests = []
+
+        stage1_by_id: dict[str, dict[str, Any]] = {}
+        for req in stage1_requests:
+            if not isinstance(req, dict):
+                continue
+            rid = req.get("request_id")
+            if isinstance(rid, str):
+                stage1_by_id[rid] = req
 
         req_meta: dict[str, dict[str, Any]] = {}
         for req in stage2_payload.get("requests", []):
@@ -1241,12 +1293,19 @@ class SymbioticCommLLMPlanner:
             rid = req.get("request_id")
             if not isinstance(rid, str):
                 continue
+            stage1_req = stage1_by_id.get(rid, {})
             req_meta[rid] = {
                 "agv_id": int(req.get("agv_id", 0)),
                 "purpose": str(req.get("purpose", "")),
+                "primary_rack_id": int(stage1_req.get("primary_rack_id", 0)),
+                "backup_rack_ids": [
+                    int(b)
+                    for b in stage1_req.get("backup_rack_ids", [])
+                    if self._safe_int(b) > 0
+                ],
+                "stage1_reason": str(stage1_req.get("reason", "")) if stage1_req.get("reason") is not None else "",
+                "options": req.get("options", []) if isinstance(req.get("options", []), list) else [],
             }
-            if self.enable_rationale:
-                req_meta[rid]["agv_reason"] = str(req.get("agv_reason", ""))
 
         responses_by_id = {
             r["request_id"]: r
@@ -1256,37 +1315,68 @@ class SymbioticCommLLMPlanner:
 
         requests_payload: list[dict[str, Any]] = []
         for rid, meta in req_meta.items():
-            resp = responses_by_id.get(rid, {"decision": "DECLINE", "options": []})
-            options = resp.get("options", [])
-            if not isinstance(options, list):
-                options = []
+            resp = responses_by_id.get(
+                rid,
+                {
+                    "overall_support": "DO_NOT_SUPPORT",
+                    "option_feedback": [],
+                    "reason": "",
+                },
+            )
+            option_feedback = resp.get("option_feedback", [])
+            if not isinstance(option_feedback, list):
+                option_feedback = []
+            support_by_option_id: dict[str, str] = {}
+            for item in option_feedback:
+                if not isinstance(item, dict):
+                    continue
+                option_id = item.get("option_id")
+                support_level = item.get("support_level")
+                if not isinstance(option_id, str):
+                    continue
+                if support_level is None:
+                    continue
+                support_by_option_id[option_id] = str(support_level).upper()
 
-            compact_options: list[dict[str, Any]] = []
-            for opt in options:
+            rich_options: list[dict[str, Any]] = []
+            for opt in meta.get("options", []):
                 if not isinstance(opt, dict):
                     continue
-                compact_options.append(
+                option_id = opt.get("option_id")
+                if not isinstance(option_id, str):
+                    continue
+                eta_agv = int(self._safe_int(opt.get("eta_agv")))
+                eta_picker = int(self._safe_int(opt.get("eta_picker")))
+                if eta_agv < 0 or eta_picker < 0:
+                    continue
+                rich_options.append(
                     {
+                        "option_id": option_id,
                         "rack_id": int(opt.get("rack_id", 0)),
                         "picker_id": int(opt.get("picker_id", 0)),
-                        "sync_cost": int(opt.get("sync_cost", 0)),
-                        "eta_gap": int(opt.get("eta_gap", 0)),
+                        "eta_agv": eta_agv,
+                        "eta_picker": eta_picker,
+                        "sync_cost": max(eta_agv, eta_picker),
+                        "eta_gap": abs(eta_agv - eta_picker),
+                        "support_level": support_by_option_id.get(option_id, "REJECT"),
                     }
                 )
-                if len(compact_options) >= int(self.config.stage2_max_options_per_request):
-                    break
 
             requests_payload.append(
                 {
                     "request_id": rid,
                     "agv_id": int(meta["agv_id"]),
                     "purpose": str(meta["purpose"]),
-                    "options": compact_options,
+                    "stage1_proposal": {
+                        "primary_rack_id": int(meta.get("primary_rack_id", 0)),
+                        "backup_rack_ids": list(meta.get("backup_rack_ids", [])),
+                        "reason": str(meta.get("stage1_reason", "")),
+                    },
+                    "overall_support": str(resp.get("overall_support", "DO_NOT_SUPPORT")),
+                    "options": rich_options,
+                    "picker_reason": str(resp.get("reason", "")) if resp.get("reason") is not None else "",
                 }
             )
-            if self.enable_rationale:
-                requests_payload[-1]["agv_reason"] = str(meta.get("agv_reason", ""))
-                requests_payload[-1]["picker_reason"] = str(resp.get("reason", ""))
 
         sys_pressure = stage2_payload.get("system_pressure", {})
         if not isinstance(sys_pressure, dict):
@@ -1308,9 +1398,10 @@ class SymbioticCommLLMPlanner:
 
     def _sanitize_stage3_output(self, payload: dict[str, Any], raw: dict[str, Any]) -> Optional[dict[str, Any]]:
         """
-        Strict semantic-preserving sanitization:
+        Strict Stage 3 sanitization:
         - require dict with "assignments" list and optional "skipped" list
         - assignments must pick only from provided request.options
+        - REJECT options are not commit-worthy and therefore invalid to assign
         - enforce uniqueness constraints
         - if invalid structure -> None (whole-plan fallback)
         """
@@ -1324,7 +1415,7 @@ class SymbioticCommLLMPlanner:
         if not isinstance(skipped_in, list):
             skipped_in = []
 
-        # Build allowed options map: request_id -> set((rack,picker))
+        # Build allowed options map: request_id -> set((rack,picker)) for STRONG/WEAK only
         req_map: dict[str, dict[str, Any]] = {}
         allowed_pairs: dict[str, Set[Tuple[int, int]]] = {}
         for req in payload.get("requests", []):
@@ -1337,6 +1428,9 @@ class SymbioticCommLLMPlanner:
             pairs: set[tuple[int, int]] = set()
             for opt in req.get("options", []):
                 if not isinstance(opt, dict):
+                    continue
+                support_level = str(opt.get("support_level", "REJECT")).upper()
+                if support_level not in {"STRONG", "WEAK"}:
                     continue
                 rack_id = self._safe_int(opt.get("rack_id"))
                 picker_id = self._safe_int(opt.get("picker_id"))
@@ -1661,11 +1755,11 @@ class SymbioticCommLLMPlanner:
                 "request_id": request.get("request_id"),
                 "agv_id": request.get("agv_id"),
                 "purpose": request.get("purpose"),
+                "stage1_proposal": request.get("stage1_proposal", {}),
+                "overall_support": request.get("overall_support", "DO_NOT_SUPPORT"),
                 "options": request.get("options", []),
+                "picker_reason": request.get("picker_reason", ""),
             }
-            if self.enable_rationale:
-                item["agv_reason"] = request.get("agv_reason", "")
-                item["picker_reason"] = request.get("picker_reason", "")
             requests.append(item)
         minimal = {
             "system_pressure": payload.get("system_pressure", {}),

@@ -43,11 +43,10 @@ def summarize_communication_v2(records: list[dict]) -> dict:
             "explanation": "..."
         }
 
-    Protocol semantics:
-      - Stage2 decisions: RECOMMEND / DECLINE
-      - Stage3 final assignments: selected conflict-free assignments
-      - revision event: final rack_id != Stage1 primary_rack_id for same request
-      - fallback step: comm_final_plan["explanation"] starts with "FALLBACK_TO_RULE_SYMBIOTIC"
+    comm_metrics_v2 is aligned to the option-level support schema used by the
+    revised Stage 2 of SymbioticCommLLMPlanner, where picker-side feedback is
+    expressed through overall_support and per-option support_level rather than
+    a single RECOMMEND/DECLINE decision.
     """
     episodes_seen: set[int] = set()
     total_steps = len(records)
@@ -55,15 +54,17 @@ def summarize_communication_v2(records: list[dict]) -> dict:
 
     total_stage1_requests = 0
     total_stage2_requests = 0
-    total_recommends = 0
-    total_declines = 0
+    total_supported_requests = 0
+    total_unsupported_requests = 0
 
     total_options = 0
-    total_recommended_requests = 0
-    option_count_breakdown = {0: 0, 1: 0, 2: 0, "gt2": 0}
+    total_strong_options = 0
+    total_weak_options = 0
+    total_reject_options = 0
+    option_count_breakdown = {0: 0, 1: 0, 2: 0, 3: 0, "gt3": 0}
 
     total_assigned_requests = 0
-    total_recommended_assignable_requests = 0  # denominator for assignment_rate
+    total_supported_assignable_requests = 0  # denominator for assignment_rate
 
     total_revisions = 0
     total_assigned_requests_for_revision = 0
@@ -89,13 +90,15 @@ def summarize_communication_v2(records: list[dict]) -> dict:
                 "communication_steps": 0,
                 "stage1_requests": 0,
                 "stage2_requests": 0,
-                "recommends": 0,
-                "declines": 0,
-                "recommended_requests": 0,
+                "supported_requests": 0,
+                "unsupported_requests": 0,
+                "strong_options": 0,
+                "weak_options": 0,
+                "reject_options": 0,
                 "options_total": 0,
-                "option_count_breakdown": {0: 0, 1: 0, 2: 0, "gt2": 0},
+                "option_count_breakdown": {0: 0, 1: 0, 2: 0, 3: 0, "gt3": 0},
                 "assigned_requests": 0,
-                "recommended_assignable_requests": 0,
+                "supported_assignable_requests": 0,
                 "revisions": 0,
                 "fallback_steps": 0,
                 "objective_score_steps": 0,
@@ -129,20 +132,22 @@ def summarize_communication_v2(records: list[dict]) -> dict:
         breakdown["stage2_requests"] += len(stage2_responses)
 
         # Stage2 counts
-        recommends, declines, options_total, recommended_requests_count, option_hist = _count_stage2_response_metrics(
-            stage2_responses
-        )
-        total_recommends += recommends
-        total_declines += declines
-        total_options += options_total
-        total_recommended_requests += recommended_requests_count
+        stage2_metrics = _count_stage2_response_metrics(stage2_responses)
+        total_supported_requests += stage2_metrics["supported_requests"]
+        total_unsupported_requests += stage2_metrics["unsupported_requests"]
+        total_options += stage2_metrics["options_total"]
+        total_strong_options += stage2_metrics["strong_options"]
+        total_weak_options += stage2_metrics["weak_options"]
+        total_reject_options += stage2_metrics["reject_options"]
 
-        breakdown["recommends"] += recommends
-        breakdown["declines"] += declines
-        breakdown["options_total"] += options_total
-        breakdown["recommended_requests"] += recommended_requests_count
+        breakdown["supported_requests"] += stage2_metrics["supported_requests"]
+        breakdown["unsupported_requests"] += stage2_metrics["unsupported_requests"]
+        breakdown["strong_options"] += stage2_metrics["strong_options"]
+        breakdown["weak_options"] += stage2_metrics["weak_options"]
+        breakdown["reject_options"] += stage2_metrics["reject_options"]
+        breakdown["options_total"] += stage2_metrics["options_total"]
 
-        for key, value in option_hist.items():
+        for key, value in stage2_metrics["option_count_breakdown"].items():
             option_count_breakdown[key] += value
             breakdown["option_count_breakdown"][key] += value
 
@@ -151,9 +156,10 @@ def summarize_communication_v2(records: list[dict]) -> dict:
         total_assigned_requests += assigned_count
         breakdown["assigned_requests"] += assigned_count
 
-        # denominator: recommended requests (i.e., stage2 said RECOMMEND)
-        total_recommended_assignable_requests += recommended_requests_count
-        breakdown["recommended_assignable_requests"] += recommended_requests_count
+        # assignment_rate denominator uses Stage2-supported requests:
+        # among requests the picker side still supported, how many were committed.
+        total_supported_assignable_requests += stage2_metrics["supported_requests"]
+        breakdown["supported_assignable_requests"] += stage2_metrics["supported_requests"]
 
         # Revision rate: final rack != stage1 primary
         revisions, assigned_for_revision = _count_revision_metrics(stage1_requests, final_assignments)
@@ -187,8 +193,6 @@ def summarize_communication_v2(records: list[dict]) -> dict:
             breakdown["sum_eta_gap"] += sum_eta_gap
             breakdown["max_sync_cost_sum"] += max_sync_cost
 
-    total_stage2_decisions = total_recommends + total_declines
-
     summary = {
         "episodes": len(episodes_seen),
         "total_steps": total_steps,
@@ -196,16 +200,25 @@ def summarize_communication_v2(records: list[dict]) -> dict:
         "communication_ratio": _safe_ratio(communication_steps, total_steps),
         "total_stage1_requests": total_stage1_requests,
         "total_stage2_requests": total_stage2_requests,
-        "total_recommends": total_recommends,
-        "total_declines": total_declines,
-        "recommend_ratio": _safe_ratio(total_recommends, total_stage2_decisions),
-        "decline_ratio": _safe_ratio(total_declines, total_stage2_decisions),
+        "total_supported_requests": total_supported_requests,
+        "total_unsupported_requests": total_unsupported_requests,
+        "support_ratio": _safe_ratio(total_supported_requests, total_stage2_requests),
+        "do_not_support_ratio": _safe_ratio(total_unsupported_requests, total_stage2_requests),
         "total_options": total_options,
         "avg_options_per_request": _safe_ratio(total_options, total_stage2_requests),
-        "avg_options_per_recommended_request": _safe_ratio(total_options, total_recommended_requests),
+        "support_level_count_breakdown": {
+            "STRONG": total_strong_options,
+            "WEAK": total_weak_options,
+            "REJECT": total_reject_options,
+        },
+        "avg_strong_options_per_request": _safe_ratio(total_strong_options, total_stage2_requests),
+        "avg_non_reject_options_per_request": _safe_ratio(
+            total_strong_options + total_weak_options,
+            total_stage2_requests,
+        ),
         "option_count_breakdown": option_count_breakdown,
         "total_assigned_requests": total_assigned_requests,
-        "assignment_rate": _safe_ratio(total_assigned_requests, total_recommended_assignable_requests),
+        "assignment_rate": _safe_ratio(total_assigned_requests, total_supported_assignable_requests),
         "total_revisions": total_revisions,
         "revision_rate": _safe_ratio(total_revisions, total_assigned_requests_for_revision),
         "fallback_steps": fallback_steps,
@@ -229,16 +242,21 @@ def print_summary(summary: dict) -> None:
 
     print(f"total_stage1_requests: {summary.get('total_stage1_requests', 0)}")
     print(f"total_stage2_requests: {summary.get('total_stage2_requests', 0)}")
-    print(f"total_recommends: {summary.get('total_recommends', 0)}")
-    print(f"total_declines: {summary.get('total_declines', 0)}")
-    print(f"recommend_ratio: {float(summary.get('recommend_ratio', 0.0)):.3f}")
-    print(f"decline_ratio: {float(summary.get('decline_ratio', 0.0)):.3f}")
+    print(f"total_supported_requests: {summary.get('total_supported_requests', 0)}")
+    print(f"total_unsupported_requests: {summary.get('total_unsupported_requests', 0)}")
+    print(f"support_ratio: {float(summary.get('support_ratio', 0.0)):.3f}")
+    print(f"do_not_support_ratio: {float(summary.get('do_not_support_ratio', 0.0)):.3f}")
 
     print(f"total_options: {summary.get('total_options', 0)}")
     print(f"avg_options_per_request: {float(summary.get('avg_options_per_request', 0.0)):.3f}")
+    print(f"support_level_count_breakdown: {summary.get('support_level_count_breakdown', {})}")
     print(
-        f"avg_options_per_recommended_request: "
-        f"{float(summary.get('avg_options_per_recommended_request', 0.0)):.3f}"
+        f"avg_strong_options_per_request: "
+        f"{float(summary.get('avg_strong_options_per_request', 0.0)):.3f}"
+    )
+    print(
+        f"avg_non_reject_options_per_request: "
+        f"{float(summary.get('avg_non_reject_options_per_request', 0.0)):.3f}"
     )
     print(f"option_count_breakdown: {summary.get('option_count_breakdown', {})}")
 
@@ -279,8 +297,11 @@ def print_summary(summary: dict) -> None:
                 f"comm_steps={item.get('communication_steps', 0)} "
                 f"stage1_requests={item.get('stage1_requests', 0)} "
                 f"stage2_requests={item.get('stage2_requests', 0)} "
-                f"recommends={item.get('recommends', 0)} "
-                f"declines={item.get('declines', 0)} "
+                f"supported_requests={item.get('supported_requests', 0)} "
+                f"unsupported_requests={item.get('unsupported_requests', 0)} "
+                f"strong_options={item.get('strong_options', 0)} "
+                f"weak_options={item.get('weak_options', 0)} "
+                f"reject_options={item.get('reject_options', 0)} "
                 f"assigned={item.get('assigned_requests', 0)} "
                 f"revisions={item.get('revisions', 0)} "
                 f"fallbacks={item.get('fallback_steps', 0)}"
@@ -344,36 +365,104 @@ def _is_fallback_plan(comm_final_plan: dict) -> bool:
 
 def _count_stage2_response_metrics(
     stage2_responses: list[dict],
-) -> tuple[int, int, int, int, dict]:
-    """Return:
-    (recommend_count, decline_count, total_options, recommended_requests_count, option_hist)
-    """
-    recommend_count = 0
-    decline_count = 0
+) -> dict[str, Any]:
+    """Count Stage 2 metrics with new-schema first and old-schema fallback."""
+    supported_requests = 0
+    unsupported_requests = 0
     total_options = 0
-    recommended_requests_count = 0
-    option_hist = {0: 0, 1: 0, 2: 0, "gt2": 0}
+    strong_options = 0
+    weak_options = 0
+    reject_options = 0
+    option_hist = {0: 0, 1: 0, 2: 0, 3: 0, "gt3": 0}
 
     for item in stage2_responses:
-        decision = str(item.get("decision", "")).upper()
-        options = item.get("options", [])
-        if not isinstance(options, list):
-            options = []
-
-        n_options = len(options)
+        options_count = _stage2_options_count(item)
+        n_options = int(options_count)
         if n_options in option_hist:
             option_hist[n_options] += 1
-        elif n_options > 2:
-            option_hist["gt2"] += 1
+        elif n_options > 3:
+            option_hist["gt3"] += 1
+        total_options += n_options
 
-        if decision == "RECOMMEND":
-            recommend_count += 1
-            recommended_requests_count += 1
-            total_options += n_options
-        elif decision == "DECLINE":
-            decline_count += 1
+        overall_support = _normalize_stage2_overall_support(item)
+        if overall_support == "SUPPORT":
+            supported_requests += 1
+        else:
+            unsupported_requests += 1
 
-    return recommend_count, decline_count, total_options, recommended_requests_count, option_hist
+        level_counts = _count_stage2_support_levels(item)
+        strong_options += level_counts["STRONG"]
+        weak_options += level_counts["WEAK"]
+        reject_options += level_counts["REJECT"]
+
+    return {
+        "supported_requests": supported_requests,
+        "unsupported_requests": unsupported_requests,
+        "options_total": total_options,
+        "strong_options": strong_options,
+        "weak_options": weak_options,
+        "reject_options": reject_options,
+        "option_count_breakdown": option_hist,
+    }
+
+
+def _stage2_options_count(item: dict[str, Any]) -> int:
+    """Read options_count with fallback to sanitized compatibility fields."""
+    options_count = _safe_int(item.get("options_count"))
+    if options_count > 0:
+        return options_count
+
+    options = item.get("options", [])
+    if isinstance(options, list):
+        return len([opt for opt in options if isinstance(opt, dict)])
+
+    option_feedback = item.get("option_feedback", [])
+    if isinstance(option_feedback, list):
+        return len([fb for fb in option_feedback if isinstance(fb, dict)])
+
+    return 0
+
+
+def _count_stage2_support_levels(item: dict[str, Any]) -> dict[str, int]:
+    """Count STRONG / WEAK / REJECT with new-schema first and old-schema fallback."""
+    counts = {"STRONG": 0, "WEAK": 0, "REJECT": 0}
+    option_feedback = item.get("option_feedback", [])
+    if isinstance(option_feedback, list):
+        for feedback in option_feedback:
+            if not isinstance(feedback, dict):
+                continue
+            support_level = str(feedback.get("support_level", "")).upper()
+            if support_level in counts:
+                counts[support_level] += 1
+        if sum(counts.values()) > 0:
+            return counts
+
+    # Minimal backward compatibility for old RECOMMEND/DECLINE schema.
+    decision = str(item.get("decision", "")).upper()
+    n_options = _stage2_options_count(item)
+    if decision == "RECOMMEND":
+        counts["WEAK"] = 1
+        counts["REJECT"] = max(0, n_options - 1)
+    elif decision == "DECLINE":
+        counts["REJECT"] = n_options
+    return counts
+
+
+def _normalize_stage2_overall_support(item: dict[str, Any]) -> str:
+    """Conservatively recompute overall_support from sanitized feedback when possible."""
+    counts = _count_stage2_support_levels(item)
+    if counts["STRONG"] > 0 or counts["WEAK"] > 0:
+        return "SUPPORT"
+
+    overall_support = str(item.get("overall_support", "")).upper()
+    if overall_support in {"SUPPORT", "DO_NOT_SUPPORT"}:
+        return overall_support
+
+    # Backward compatibility for old RECOMMEND/DECLINE schema.
+    decision = str(item.get("decision", "")).upper()
+    if decision == "RECOMMEND":
+        return "SUPPORT"
+    return "DO_NOT_SUPPORT"
 
 
 def _count_revision_metrics(
