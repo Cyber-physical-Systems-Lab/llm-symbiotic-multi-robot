@@ -10,10 +10,12 @@ def stage1_system_prompt_v0() -> str:
         "Each candidate includes eta_agv, region_id, and nearby_idle_pickers. "
         "System pressure includes idle_pickers, picker_scarcity, and region_load.\n"
         "Priorities:\n"
-        "1) Prefer lower eta_agv.\n"
-        "2) When picker_scarcity is high, prefer racks with nearby_idle_pickers >= 1 and be cautious with nearby_idle_pickers == 0.\n"
-        "3) If candidates are otherwise similar, avoid concentrating proposals in the same high-load region.\n"
-        "4) Backups should be useful alternatives, not near-duplicates of the primary.\n"
+        "1) AGV accessibility comes first: prefer lower eta_agv.\n"
+        "2) Use nearby_idle_pickers only as a secondary preference when AGV costs are similar. "
+        "Do NOT replace a much closer rack with a much farther one only because it has more nearby idle pickers.\n"
+        "3) When picker_scarcity is high, prefer candidates with nearby_idle_pickers >= 1 among otherwise comparable racks.\n"
+        "4) If candidates are otherwise similar, avoid concentrating proposals in the same high-load region.\n"
+        "5) Backups should be useful alternatives, not near-duplicates of the primary.\n"
         "Do NOT optimize exact picker assignment or final global coordination. "
         "Use only the provided rack ids.\n"
         "Output only the decision fields for each request. "
@@ -62,16 +64,19 @@ def stage3_system_prompt_v0() -> str:
         "2) Retain the original primary if it remains jointly worthwhile.\n"
         "3) Revise to a backup when picker feedback makes another bounded option more supportable.\n"
         "4) Skip the request when no STRONG or WEAK option remains jointly worthwhile.\n"
-        "5) Across requests, respect unique_picker and unique_rack, and keep fixed_direct_actions unchanged.\n"
+        "5) Respect unique_picker and unique_rack across the whole batch.\n"
+        "Conflict rule:\n"
+        "6) If two or more requests require the same picker, do NOT assign all of them. Keep at most one and put the others in skipped.\n"
+        "7) If two or more requests require the same rack, do NOT assign all of them. Keep at most one and put the others in skipped.\n"
+        "8) It is better to return a smaller conflict-free assignment set than a larger conflicting one.\n"
+        "9) If a request cannot be kept without violating unique_picker or unique_rack, skip it.\n"
         "Important limits:\n"
         "- Use ONLY the provided options.\n"
         "- Do NOT invent new racks, pickers, or options.\n"
         "- Do NOT treat this as a new global planning stage.\n"
-        "In the explanation, briefly note whether requests were retained, revised, or skipped.\n"
         "Return JSON only: "
-        '{"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."],"explanation":"Retained one primary, revised one request to a better-supported backup, and skipped none."}'
+        '{"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."],"explanation":"Kept one conflict-free assignment and skipped the conflicting request."}'
     )
-
 
 # ========== V1: With propagated rationale ==========
 def stage1_system_prompt_v1() -> str:
@@ -82,17 +87,20 @@ def stage1_system_prompt_v1() -> str:
         "Each candidate includes eta_agv, region_id, and nearby_idle_pickers. "
         "System pressure includes idle_pickers, picker_scarcity, and region_load.\n"
         "Priorities:\n"
-        "1) Prefer lower eta_agv.\n"
-        "2) When picker_scarcity is high, prefer racks with nearby_idle_pickers >= 1 and be cautious with nearby_idle_pickers == 0.\n"
-        "3) If candidates are otherwise similar, avoid concentrating proposals in the same high-load region.\n"
-        "4) Backups should be useful alternatives, not near-duplicates of the primary.\n"
+        "1) AGV accessibility comes first: prefer lower eta_agv.\n"
+        "2) Use nearby_idle_pickers only as a secondary preference when AGV costs are similar. "
+        "Do NOT replace a much closer rack with a much farther one only because it has more nearby idle pickers.\n"
+        "3) When picker_scarcity is high, prefer candidates with nearby_idle_pickers >= 1 among otherwise comparable racks.\n"
+        "4) If candidates are otherwise similar, avoid concentrating proposals in the same high-load region.\n"
+        "5) Backups should be useful alternatives, not near-duplicates of the primary.\n"
         "Do NOT optimize exact picker assignment or final global coordination. "
         "Use only the provided rack ids.\n"
         "Output only the decision fields for each request. "
         "Do NOT repeat input metadata such as agv_id, purpose, or candidates.\n"
         "Also include a short reason explaining why the primary was chosen and why the backups remain useful.\n"
+        "Keep the reason concise and focused on AGV accessibility first, with coarse picker support only as a secondary factor.\n"
         "Return JSON only: "
-        '{"requests":[{"request_id":"...","primary_rack_id":37,"backup_rack_ids":[52,41],"reason":"Low eta_agv and better coarse picker support; backups preserve alternatives."}]}'
+        '{"requests":[{"request_id":"...","primary_rack_id":37,"backup_rack_ids":[52,41],"reason":"Primary has the best AGV accessibility; backups remain useful alternatives with acceptable coarse support."}]}'
     )
 
 
@@ -139,14 +147,19 @@ def stage3_system_prompt_v1() -> str:
         "2) Retain the original primary if it remains jointly worthwhile.\n"
         "3) Revise to a backup when picker feedback makes another bounded option more supportable.\n"
         "4) Skip the request when no STRONG or WEAK option remains jointly worthwhile.\n"
-        "5) Across requests, respect unique_picker and unique_rack, and keep fixed_direct_actions unchanged.\n"
+        "5) Respect unique_picker and unique_rack across the whole batch.\n"
+        "Conflict rule:\n"
+        "6) If two or more requests require the same picker, do NOT assign all of them. Keep at most one and put the others in skipped.\n"
+        "7) If two or more requests require the same rack, do NOT assign all of them. Keep at most one and put the others in skipped.\n"
+        "8) It is better to return a smaller conflict-free assignment set than a larger conflicting one.\n"
+        "9) If a request cannot be kept without violating unique_picker or unique_rack, skip it.\n"
         "Use AGV and picker rationales only as soft tie-break signals inside the provided bounded alternatives. "
-        "They may help explain whether retaining the primary or revising to a backup is more coherent, but they must not override support_level constraints.\n"
+        "They may help explain whether retaining the primary or revising to a backup is more coherent, but they must not override conflict constraints or support_level constraints.\n"
         "Important limits:\n"
         "- Use ONLY the provided options.\n"
         "- Do NOT invent new racks, pickers, or options.\n"
         "- Do NOT treat this as a new global planning stage.\n"
-        "In the explanation, briefly note whether requests were retained, revised, or skipped.\n"
+        "In the explanation, briefly state whether requests were retained, revised, or skipped because of support or conflict.\n"
         "Return JSON only: "
-        '{"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."],"explanation":"Retained one primary, revised one request to a stronger backup, and skipped one unsupported request."}'
+        '{"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."],"explanation":"Retained one request and skipped the conflicting request to satisfy unique_picker and unique_rack."}'
     )

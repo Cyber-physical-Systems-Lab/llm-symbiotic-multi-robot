@@ -74,6 +74,7 @@ class SymbioticCommLLMPlannerConfig:
     stage1_backups: int = 2                  # backups per request from the model (sanitizer caps)
     stage2_picker_options_per_rack: int = 3  # top P pickers per rack candidate (by eta_picker)
     stage2_max_options_per_request: int = 3  # keep up to 3 joint options per request (align with Stage1 candidates)
+    max_requests_per_batch: int = 3         # mini-batch size within one communication round
 
     # Communication triggering
     wait_timeout_steps: int = 40
@@ -178,8 +179,6 @@ class SymbioticCommLLMPlanner:
         
 
         self.last_communication_triggered = True
-        self.last_communication_step = self.step_counter
-        self._record_communication_step(self.step_counter)
         self.last_used_fallback = False
 
         # Build batch request contexts (deterministic)
@@ -201,6 +200,8 @@ class SymbioticCommLLMPlanner:
                 },
             })
             actions = self._assemble_actions_from_assignments(state, assignments=[])
+            if self._has_nonzero_actions(actions):
+                self._mark_communication_effective()
             self._debug_print_delivery_flow(
                 state=state,
                 batch_requests=batch_requests,
@@ -209,85 +210,221 @@ class SymbioticCommLLMPlanner:
             )
             return actions
 
-        # -------- Stage 1 (AGV LLM): propose primary+backups --------
-        stage1_payload = self._build_stage1_payload(state, batch_requests)
+        request_batches = self._chunk_requests(
+            batch_requests,
+            max(1, int(self.config.max_requests_per_batch)),
+        )
         if self.config.debug:
-            print("STAGE1_PAYLOAD\n", json.dumps(stage1_payload, ensure_ascii=False, indent=2))
-
-        stage1_raw: dict[str, Any] = {"requests": []}
-        try:
-            stage1_raw = self.agv_client.chat_json(
-                self._stage1_system_prompt(),
-                self._stage1_user_prompt(stage1_payload),
+            print(
+                "COMMUNICATION_MINI_BATCHES\n",
+                json.dumps(
+                    [
+                        [str(req.get("request_id", "")) for req in batch]
+                        for batch in request_batches
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
             )
-        except Exception as exc:
-            return self._fallback_whole_plan(state, reason=f"Stage1 LLM exception: {exc}")
 
-        if self.config.debug:
-            print("STAGE1_RAW\n", json.dumps(stage1_raw, ensure_ascii=False, indent=2))
+        all_stage1_requests: list[dict[str, Any]] = []
+        all_stage2_responses: list[dict[str, Any]] = []
+        aggregate_stage3_requests: list[dict[str, Any]] = []
+        aggregate_skipped: list[str] = []
+        all_assignments: list[dict[str, Any]] = []
+        batch_failure_reasons: list[str] = []
 
-        stage1_bundle = self._sanitize_stage1_output(stage1_payload, stage1_raw)
+        reserved_picker_ids_this_round: set[int] = set()
+        reserved_rack_ids_this_round: set[int] = set()
 
-        # Log Stage1 output (sanitized)
-        #self.last_request = {"requests": stage1_bundle}
-        self.last_request = _DictMessage({"requests": stage1_bundle})
+        for batch_index, request_batch in enumerate(request_batches, start=1):
+            batch_request_ids = [str(req.get("request_id", "")) for req in request_batch]
+            if self.config.debug:
+                print(
+                    f"BATCH_{batch_index}_REQUESTS\n",
+                    json.dumps(batch_request_ids, ensure_ascii=False, indent=2),
+                )
 
-        # If Stage1 yields nothing, whole-plan fallback
-        if not stage1_bundle:
-            return self._fallback_whole_plan(state, reason="Stage1 produced no valid proposals.")
+            stage1_payload = self._build_stage1_payload(state, request_batch)
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE1_PAYLOAD\n", json.dumps(stage1_payload, ensure_ascii=False, indent=2))
 
-        # -------- Stage 2 (Picker LLM): support feedback over bounded options (<=3/request) --------
-        stage2_payload = self._build_stage2_payload(state, stage1_bundle)
-        if self.config.debug:
-            print("STAGE2_PAYLOAD\n", json.dumps(stage2_payload, ensure_ascii=False, indent=2))
+            stage1_raw: dict[str, Any] = {"requests": []}
+            try:
+                stage1_raw = self.agv_client.chat_json(
+                    self._stage1_system_prompt(),
+                    self._stage1_user_prompt(stage1_payload),
+                )
+            except Exception as exc:
+                self.last_used_fallback = True
+                batch_failure_reasons.append(f"batch{batch_index}: Stage1 LLM exception: {exc}")
+                if self.config.debug:
+                    print(f"BATCH_{batch_index}_FAILURE: Stage1 LLM exception: {exc}")
+                continue
 
-        stage2_raw: dict[str, Any] = {"responses": []}
-        try:
-            stage2_raw = self.picker_client.chat_json(
-                self._stage2_system_prompt(),
-                self._stage2_user_prompt(stage2_payload),
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE1_RAW\n", json.dumps(stage1_raw, ensure_ascii=False, indent=2))
+
+            stage1_bundle = self._sanitize_stage1_output(stage1_payload, stage1_raw)
+            all_stage1_requests.extend(stage1_bundle)
+
+            if not stage1_bundle:
+                self.last_used_fallback = True
+                batch_failure_reasons.append(f"batch{batch_index}: Stage1 produced no valid proposals.")
+                if self.config.debug:
+                    print(f"BATCH_{batch_index}_FAILURE: Stage1 produced no valid proposals.")
+                continue
+
+            stage2_payload = self._build_stage2_payload(
+                state,
+                stage1_bundle,
+                reserved_picker_ids=reserved_picker_ids_this_round,
+                reserved_rack_ids=reserved_rack_ids_this_round,
             )
-        except Exception as exc:
-            return self._fallback_whole_plan(state, reason=f"Stage2 LLM exception: {exc}")
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE2_PAYLOAD\n", json.dumps(stage2_payload, ensure_ascii=False, indent=2))
 
-        if self.config.debug:
-            print("STAGE2_RAW\n", json.dumps(stage2_raw, ensure_ascii=False, indent=2))
+            stage2_raw: dict[str, Any] = {"responses": []}
+            try:
+                stage2_raw = self.picker_client.chat_json(
+                    self._stage2_system_prompt(),
+                    self._stage2_user_prompt(stage2_payload),
+                )
+            except Exception as exc:
+                self.last_used_fallback = True
+                batch_failure_reasons.append(f"batch{batch_index}: Stage2 LLM exception: {exc}")
+                if self.config.debug:
+                    print(f"BATCH_{batch_index}_FAILURE: Stage2 LLM exception: {exc}")
+                continue
 
-        stage2_responses = self._sanitize_stage2_output(stage2_payload, stage2_raw)
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE2_RAW\n", json.dumps(stage2_raw, ensure_ascii=False, indent=2))
 
-        #self.last_response = {"responses": stage2_responses}
-        self.last_response = _DictMessage({"responses": stage2_responses})
+            stage2_responses = self._sanitize_stage2_output(stage2_payload, stage2_raw)
+            all_stage2_responses.extend(stage2_responses)
 
-        # -------- Stage 3 (Commitment LLM): retain / revise / skip within bounded options --------
-        stage3_payload = self._build_stage3_payload(state, stage2_payload, stage2_responses)
-        if self.config.debug:
-            print("STAGE3_PAYLOAD\n", json.dumps(stage3_payload, ensure_ascii=False, indent=2))
+            if self._all_requests_unsupported(stage2_responses):
+                stage3_final = self._build_no_assignment_batch_plan(stage2_responses)
+                aggregate_skipped.extend(
+                    [
+                        rid
+                        for rid in stage3_final.get("skipped", [])
+                        if isinstance(rid, str)
+                    ]
+                )
+                if self.config.debug:
+                    print(
+                        f"BATCH_{batch_index}_STAGE3_SHORT_CIRCUIT\n",
+                        json.dumps(stage3_final, ensure_ascii=False, indent=2),
+                    )
+                continue
 
-        stage3_raw: dict[str, Any] = {"assignments": [], "skipped": []}
-        try:
-            stage3_raw = self.final_client.chat_json(
-                self._stage3_system_prompt(),
-                self._stage3_user_prompt(stage3_payload),
+            stage3_payload = self._build_stage3_payload(state, stage1_bundle, stage2_payload, stage2_responses)
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE3_PAYLOAD\n", json.dumps(stage3_payload, ensure_ascii=False, indent=2))
+
+            stage3_raw: dict[str, Any] = {"assignments": [], "skipped": []}
+            try:
+                stage3_raw = self.final_client.chat_json(
+                    self._stage3_system_prompt(),
+                    self._stage3_user_prompt(stage3_payload),
+                )
+            except Exception as exc:
+                self.last_used_fallback = True
+                batch_failure_reasons.append(f"batch{batch_index}: Stage3 LLM exception: {exc}")
+                if self.config.debug:
+                    print(f"BATCH_{batch_index}_FAILURE: Stage3 LLM exception: {exc}")
+                continue
+
+            if self.config.debug:
+                print(f"BATCH_{batch_index}_STAGE3_RAW\n", json.dumps(stage3_raw, ensure_ascii=False, indent=2))
+
+            stage3_final = self._sanitize_stage3_output(stage3_payload, stage3_raw)
+            if stage3_final is None:
+                self.last_used_fallback = True
+                batch_failure_reasons.append(f"batch{batch_index}: Stage3 invalid output.")
+                if self.config.debug:
+                    print(f"BATCH_{batch_index}_FAILURE: Stage3 invalid output.")
+                continue
+
+            aggregate_stage3_requests.extend(stage3_payload.get("requests", []))
+            aggregate_skipped.extend(
+                [
+                    rid
+                    for rid in stage3_final.get("skipped", [])
+                    if isinstance(rid, str)
+                ]
             )
-        except Exception as exc:
-            return self._fallback_whole_plan(state, reason=f"Stage3 LLM exception: {exc}")
+
+            batch_assignments = self._dedupe_assignments(
+                stage3_final.get("assignments", []),
+                reserved_picker_ids=reserved_picker_ids_this_round,
+                reserved_rack_ids=reserved_rack_ids_this_round,
+            )
+            all_assignments.extend(batch_assignments)
+            self._reserve_resources_from_assignments(
+                batch_assignments,
+                reserved_picker_ids_this_round,
+                reserved_rack_ids_this_round,
+            )
+
+            if self.config.debug:
+                print(
+                    f"BATCH_{batch_index}_ASSIGNMENTS\n",
+                    json.dumps(batch_assignments, ensure_ascii=False, indent=2),
+                )
+                print(
+                    f"BATCH_{batch_index}_ALL_ASSIGNMENTS_AFTER_EXTEND\n",
+                    json.dumps(all_assignments, ensure_ascii=False, indent=2),
+                )
+
+        self.last_request = _DictMessage({"requests": all_stage1_requests})
+        self.last_response = _DictMessage({"responses": all_stage2_responses})
+
+        aggregate_final_plan = {
+            "assignments": all_assignments,
+            "skipped": self._dedupe_strings(aggregate_skipped),
+            "explanation": "; ".join(batch_failure_reasons) if batch_failure_reasons else "",
+        }
+        aggregate_stage3_payload = {
+            "requests": aggregate_stage3_requests,
+        }
+        aggregate_final_plan["objective_scores"] = self._compute_objective_scores(
+            aggregate_stage3_payload,
+            aggregate_final_plan,
+        )
+        self.last_final_plan = _DictMessage(aggregate_final_plan)
 
         if self.config.debug:
-            print("STAGE3_RAW\n", json.dumps(stage3_raw, ensure_ascii=False, indent=2))
+            print("ALL_ASSIGNMENTS_BEFORE_ASSEMBLE\n", json.dumps(all_assignments, ensure_ascii=False, indent=2))
+            print(
+                "LAST_FINAL_PLAN_ASSIGNMENTS\n",
+                json.dumps(aggregate_final_plan.get("assignments", []), ensure_ascii=False, indent=2),
+            )
 
-        stage3_final = self._sanitize_stage3_output(stage3_payload, stage3_raw)
+        tentative_actions = self._assemble_actions_from_assignments(state, assignments=all_assignments)
+        if batch_requests and not self._has_nonzero_actions(tentative_actions):
+            if self.config.debug:
+                print("ROUND_LEVEL_FALLBACK_TRIGGERED: no executable actions after communication round")
+                print("ROUND_LEVEL_BATCH_REQUESTS\n", json.dumps(batch_requests, ensure_ascii=False, indent=2))
+                print("ROUND_LEVEL_ALL_ASSIGNMENTS\n", json.dumps(all_assignments, ensure_ascii=False, indent=2))
+                print("ROUND_LEVEL_TENTATIVE_ACTIONS\n", json.dumps(tentative_actions, ensure_ascii=False, indent=2))
+            fallback_actions = self._fallback_whole_plan(
+                state,
+                reason="Communication produced no executable actions.",
+            )
+            self._mark_communication_effective()
+            self._debug_print_delivery_flow(
+                state=state,
+                batch_requests=batch_requests,
+                returned_actions=fallback_actions,
+                branch="COMMUNICATION_ROUND_FALLBACK",
+            )
+            return fallback_actions
 
-        if stage3_final is None:
-            return self._fallback_whole_plan(state, reason="Stage3 invalid output; fallback to rule symbiotic.")
-
-        # P2: compute objective scores for logging/analysis (not used to reject outputs)
-        stage3_final["objective_scores"] = self._compute_objective_scores(stage3_payload, stage3_final)
-
-        #self.last_final_plan = stage3_final
-        self.last_final_plan = _DictMessage(stage3_final)
-
-        assignments = stage3_final.get("assignments", [])
-        actions = self._assemble_actions_from_assignments(state, assignments=assignments)
+        actions = tentative_actions
+        if self._has_nonzero_actions(actions):
+            self._mark_communication_effective()
         self._debug_print_delivery_flow(
             state=state,
             batch_requests=batch_requests,
@@ -296,7 +433,7 @@ class SymbioticCommLLMPlanner:
         )
 
         # Update short-term cooperative assignment tracking (for triggering)
-        self._register_active_assignments_from_assignments(state, assignments)
+        self._register_active_assignments_from_assignments(state, all_assignments)
 
         return actions
 
@@ -774,6 +911,147 @@ class SymbioticCommLLMPlanner:
 
         return requests
 
+    def _chunk_requests(self, requests: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str, Any]]]:
+        """Split requests into deterministic mini-batches."""
+        if chunk_size <= 0:
+            chunk_size = 1
+        return [requests[idx : idx + chunk_size] for idx in range(0, len(requests), chunk_size)]
+
+    def _reserve_resources_from_assignments(
+        self,
+        assignments: list[dict[str, Any]],
+        reserved_picker_ids: set[int],
+        reserved_rack_ids: set[int],
+    ) -> None:
+        """Update per-round reserved resources from committed assignments."""
+        for item in assignments:
+            if not isinstance(item, dict):
+                continue
+            picker_id = self._safe_int(item.get("picker_id"))
+            rack_id = self._safe_int(item.get("rack_id"))
+            if picker_id > 0:
+                reserved_picker_ids.add(int(picker_id))
+            if rack_id > 0:
+                reserved_rack_ids.add(int(rack_id))
+
+    def _dedupe_assignments(
+        self,
+        assignments: list[dict[str, Any]],
+        reserved_picker_ids: set[int] | None = None,
+        reserved_rack_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Drop assignments that would reuse already-reserved picker/rack resources."""
+        reserved_picker_ids = reserved_picker_ids or set()
+        reserved_rack_ids = reserved_rack_ids or set()
+        seen_request_ids: set[str] = set()
+        local_pickers = set(reserved_picker_ids)
+        local_racks = set(reserved_rack_ids)
+        deduped: list[dict[str, Any]] = []
+
+        for item in assignments:
+            if not isinstance(item, dict):
+                continue
+            request_id = item.get("request_id")
+            if not isinstance(request_id, str) or request_id in seen_request_ids:
+                continue
+            picker_id = self._safe_int(item.get("picker_id"))
+            rack_id = self._safe_int(item.get("rack_id"))
+            agv_id = self._safe_int(item.get("agv_id"))
+            if agv_id <= 0 or picker_id <= 0 or rack_id <= 0:
+                continue
+            if picker_id in local_pickers or rack_id in local_racks:
+                continue
+            deduped.append(
+                {
+                    "request_id": request_id,
+                    "agv_id": int(agv_id),
+                    "picker_id": int(picker_id),
+                    "rack_id": int(rack_id),
+                }
+            )
+            seen_request_ids.add(request_id)
+            local_pickers.add(int(picker_id))
+            local_racks.add(int(rack_id))
+
+        return deduped
+
+    def _dedupe_strings(self, values: list[str]) -> list[str]:
+        """Preserve order while removing duplicate strings."""
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for value in values:
+            if not isinstance(value, str) or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _mark_communication_effective(self) -> None:
+        """Record a communication round only when it produced an executable outcome.
+
+        A communication round is only counted as effective if it produces
+        executable assignments, executable fixed actions, or explicitly falls
+        back to the rule-based planner. Otherwise, the round is not recorded as
+        a successful communication event, preventing idle deadlock caused by
+        premature throttling.
+        """
+        self.last_communication_step = self.step_counter
+        self._record_communication_step(self.step_counter)
+
+    def _has_nonzero_actions(self, actions: list[int]) -> bool:
+        """Return whether at least one macro-action is executable and non-zero.
+
+        A communication round now falls back at the round level if it produces
+        no executable nonzero actions after aggregation. This prevents idle
+        deadlock caused by structurally non-empty but actionless results, such
+        as all-zero fixed actions or fully skipped mini-batches.
+        """
+        return any(self._safe_int(action) > 0 for action in actions)
+
+    def _all_requests_unsupported(self, stage2_responses: list[dict[str, Any]]) -> bool:
+        """Return True when no request in this batch has any commit-worthy option.
+
+        When Stage 2 determines that no request in the current mini-batch has any
+        picker-supportable option, Stage 3 is skipped and a deterministic
+        no-assignment outcome is produced. This is a normal control-flow outcome,
+        not a fallback.
+        """
+        if not stage2_responses:
+            return True
+
+        for response in stage2_responses:
+            if not isinstance(response, dict):
+                continue
+            options = response.get("options", [])
+            if not isinstance(options, list):
+                options = []
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                support_level = str(option.get("support_level", "")).upper()
+                if support_level in {"STRONG", "WEAK"}:
+                    return False
+
+            overall_support = str(response.get("overall_support", "")).upper()
+            options_count = self._safe_int(response.get("options_count", 0))
+            if overall_support == "SUPPORT" and options_count > 0:
+                return False
+
+        return True
+
+    def _build_no_assignment_batch_plan(self, stage2_responses: list[dict[str, Any]]) -> dict[str, Any]:
+        """Build a deterministic no-assignment result for an unsupported mini-batch."""
+        skipped = [
+            str(response.get("request_id"))
+            for response in stage2_responses
+            if isinstance(response, dict) and isinstance(response.get("request_id"), str)
+        ]
+        return {
+            "assignments": [],
+            "skipped": skipped,
+            "explanation": "No picker-supportable options remained in this batch after Stage 2.",
+        }
+
     # ----------------------------
     # Stage 1 payload + sanitize
     # ----------------------------
@@ -969,12 +1247,31 @@ class SymbioticCommLLMPlanner:
     # Stage 2 payload + sanitize
     # ----------------------------
 
-    def _build_stage2_payload(self, state: dict[str, Any], stage1_bundle: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_stage2_payload(
+        self,
+        state: dict[str, Any],
+        stage1_bundle: list[dict[str, Any]],
+        reserved_picker_ids: set[int] | None = None,
+        reserved_rack_ids: set[int] | None = None,
+    ) -> dict[str, Any]:
+        """Build Stage 2 payload from the bounded rack set proposed by Stage 1.
+
+        Stage 2 no longer re-searches over the full candidate pool. It only
+        evaluates the primary + backups proposed by Stage 1, preserving the
+        intended proposal -> feedback -> revision semantics.
+
+        Stage 2 option construction is coverage-first: it preserves the bounded
+        rack alternatives proposed by Stage 1 before adding extra picker
+        variants. This keeps Stage 2 aligned with the intended
+        proposal -> feedback -> revision semantics.
+        """
         agents = self._sorted_agents(state)
         idle_agvs = sum(1 for a in agents if a.get("type") == "AGV" and not bool(a.get("busy", False)))
+        reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
+        reserved_rack_ids = set() if reserved_rack_ids is None else {int(x) for x in reserved_rack_ids}
         # Reserve pickers already committed to active cooperative assignments so
         # an unfinished unload/load does not lose its paired picker mid-execution.
-        reserved_picker_ids = {
+        active_reserved_picker_ids = {
             int(assignment.get("picker_id", -1))
             for assignment in self.active_assignments.values()
             if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
@@ -984,6 +1281,7 @@ class SymbioticCommLLMPlanner:
             for a in agents
             if a.get("type") == "PICKER"
             and not bool(a.get("busy", False))
+            and int(a["id"]) not in active_reserved_picker_ids
             and int(a["id"]) not in reserved_picker_ids
         ]
         idle_pickers = len(available_pickers)
@@ -993,32 +1291,41 @@ class SymbioticCommLLMPlanner:
             request_id = str(req["request_id"])
             agv_id = int(req["agv_id"])
             purpose = str(req["purpose"])
-            raw_candidates = req.get("candidates", [])
-            candidate_entries: list[dict[str, Any]] = []
-            request_options: list[dict[str, Any]] = []
-
-            for c in raw_candidates:
-                if not isinstance(c, dict):
+            selected_rack_ids: list[int] = []
+            primary_rack_id = self._safe_int(req.get("primary_rack_id"))
+            if primary_rack_id > 0:
+                selected_rack_ids.append(int(primary_rack_id))
+            for rack_id in req.get("backup_rack_ids", []):
+                rack_id_int = self._safe_int(rack_id)
+                if rack_id_int <= 0 or rack_id_int in selected_rack_ids:
                     continue
-                rack_id = self._safe_int(c.get("rack_id"))
-                eta_agv = self._safe_int(c.get("eta_agv"))
+                selected_rack_ids.append(int(rack_id_int))
+
+            eta_agv_by_rack: dict[int, int] = {}
+            for candidate in req.get("candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                rack_id = self._safe_int(candidate.get("rack_id"))
+                eta_agv = self._safe_int(candidate.get("eta_agv"))
+                if rack_id > 0 and eta_agv >= 0:
+                    eta_agv_by_rack[int(rack_id)] = int(eta_agv)
+
+            pairs_by_rack: dict[int, list[dict[str, Any]]] = {}
+            for rack_id in selected_rack_ids:
+                eta_agv = eta_agv_by_rack.get(int(rack_id), -1)
                 if rack_id <= 0 or eta_agv < 0:
                     continue
+                if int(rack_id) in reserved_rack_ids:
+                    continue
 
-                picker_opts: list[dict[str, int]] = []
+                rack_pairs: list[dict[str, Any]] = []
                 for p in available_pickers:
                     pid = int(p["id"])
                     eta_picker = self._safe_cost(self._agent_cost_map(state, "picker", pid), rack_id)
                     if eta_picker is None:
                         continue
                     eta_picker = int(eta_picker)
-                    picker_opts.append(
-                        {
-                            "picker_id": int(pid),
-                            "eta_picker": eta_picker,
-                        }
-                    )
-                    request_options.append(
+                    rack_pairs.append(
                         {
                             "rack_id": int(rack_id),
                             "picker_id": int(pid),
@@ -1026,26 +1333,64 @@ class SymbioticCommLLMPlanner:
                             "eta_picker": eta_picker,
                         }
                     )
-
-                picker_opts.sort(key=lambda item: (int(item["eta_picker"]), int(item["picker_id"])))
-                picker_opts = picker_opts[: max(0, int(self.config.stage2_picker_options_per_rack))]
-
-                candidate_entries.append(
-                    {
-                        "rack_id": int(rack_id),
-                        "eta_agv": int(eta_agv),
-                        "picker_options": picker_opts,
-                    }
+                rack_pairs.sort(
+                    key=lambda item: (
+                        int(item["eta_picker"]),
+                        int(item["picker_id"]),
+                        int(item["rack_id"]),
+                    )
                 )
+                if rack_pairs:
+                    pairs_by_rack[int(rack_id)] = rack_pairs
 
-            request_options.sort(
-                key=lambda item: (
-                    int(item["eta_picker"]),
-                    int(item["rack_id"]),
-                    int(item["picker_id"]),
+            max_options = max(0, int(self.config.stage2_max_options_per_request))
+            request_options: list[dict[str, Any]] = []
+            selected_pairs: set[tuple[int, int]] = set()
+
+            # Phase 1: preserve rack coverage with deterministic priority:
+            # primary first, then backups in Stage1 order.
+            for rack_id in selected_rack_ids:
+                if len(request_options) >= max_options:
+                    break
+                rack_pairs = pairs_by_rack.get(int(rack_id), [])
+                if not rack_pairs:
+                    continue
+                best_pair = rack_pairs[0]
+                pair_key = (int(best_pair["rack_id"]), int(best_pair["picker_id"]))
+                if pair_key in selected_pairs:
+                    continue
+                request_options.append(dict(best_pair))
+                selected_pairs.add(pair_key)
+
+            # Phase 2: fill remaining slots with extra picker variants.
+            if len(request_options) < max_options:
+                remaining_pairs: list[dict[str, Any]] = []
+                for rack_id in selected_rack_ids:
+                    rack_pairs = pairs_by_rack.get(int(rack_id), [])
+                    if not rack_pairs:
+                        continue
+                    for pair in rack_pairs[1:]:
+                        pair_key = (int(pair["rack_id"]), int(pair["picker_id"]))
+                        if pair_key in selected_pairs:
+                            continue
+                        remaining_pairs.append(dict(pair))
+
+                remaining_pairs.sort(
+                    key=lambda item: (
+                        int(item["eta_picker"]),
+                        int(item["rack_id"]),
+                        int(item["picker_id"]),
+                    )
                 )
-            )
-            request_options = request_options[: max(0, int(self.config.stage2_max_options_per_request))]
+                for pair in remaining_pairs:
+                    if len(request_options) >= max_options:
+                        break
+                    pair_key = (int(pair["rack_id"]), int(pair["picker_id"]))
+                    if pair_key in selected_pairs:
+                        continue
+                    request_options.append(pair)
+                    selected_pairs.add(pair_key)
+
             for idx, option in enumerate(request_options):
                 option["option_id"] = f"OPT_{idx}"
 
@@ -1054,7 +1399,14 @@ class SymbioticCommLLMPlanner:
                     "request_id": request_id,
                     "agv_id": int(agv_id),
                     "purpose": purpose,
-                    "candidates": candidate_entries,
+                    "stage1_proposal": {
+                        "primary_rack_id": int(primary_rack_id) if primary_rack_id > 0 else 0,
+                        "backup_rack_ids": [
+                            int(rack_id)
+                            for rack_id in selected_rack_ids
+                            if int(rack_id) != int(primary_rack_id)
+                        ],
+                    },
                     "options": request_options,
                     "options_count": int(len(request_options)),
                 }
@@ -1266,20 +1618,15 @@ class SymbioticCommLLMPlanner:
     def _build_stage3_payload(
         self,
         state: dict[str, Any],
+        stage1_bundle: list[dict[str, Any]],
         stage2_payload: dict[str, Any],
         stage2_responses: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Build Stage 3 revision payload from Stage 1 proposal summary plus Stage 2 feedback."""
         fixed_direct_actions = self._build_fixed_direct_actions(state)
 
-        stage1_requests = []
-        if isinstance(self.last_request, _DictMessage):
-            stage1_requests = self.last_request.to_dict().get("requests", [])
-        if not isinstance(stage1_requests, list):
-            stage1_requests = []
-
         stage1_by_id: dict[str, dict[str, Any]] = {}
-        for req in stage1_requests:
+        for req in stage1_bundle:
             if not isinstance(req, dict):
                 continue
             rid = req.get("request_id")
@@ -1398,20 +1745,26 @@ class SymbioticCommLLMPlanner:
 
     def _sanitize_stage3_output(self, payload: dict[str, Any], raw: dict[str, Any]) -> Optional[dict[str, Any]]:
         """
-        Strict Stage 3 sanitization:
-        - require dict with "assignments" list and optional "skipped" list
-        - assignments must pick only from provided request.options
-        - REJECT options are not commit-worthy and therefore invalid to assign
-        - enforce uniqueness constraints
-        - if invalid structure -> None (whole-plan fallback)
+        Stage 3 sanitization is conflict-tolerant at the assignment level:
+        conflicting assignments are dropped individually, while valid conflict-free
+        assignments are preserved and the remaining requests are marked as skipped.
+
+        Only clearly broken top-level structures return None.
         """
-        if not isinstance(raw, dict):
+        def invalid(reason: str) -> Optional[dict[str, Any]]:
+            if self.config.debug:
+                print("STAGE3_SANITIZE_INVALID:", reason)
+                print("STAGE3_SANITIZE_RAW\n", json.dumps(raw, ensure_ascii=False, indent=2))
+                print("STAGE3_SANITIZE_PAYLOAD\n", json.dumps(payload, ensure_ascii=False, indent=2))
             return None
+
+        if not isinstance(raw, dict):
+            return invalid("raw is not a dict")
 
         assignments_in = raw.get("assignments")
         skipped_in = raw.get("skipped", [])
         if not isinstance(assignments_in, list):
-            return None
+            return invalid('"assignments" is not a list')
         if not isinstance(skipped_in, list):
             skipped_in = []
 
@@ -1446,32 +1799,39 @@ class SymbioticCommLLMPlanner:
         used_requests: set[str] = set()
 
         sanitized_assignments: list[dict[str, Any]] = []
+        dropped_request_ids: list[str] = []
         for item in assignments_in:
             if not isinstance(item, dict):
-                return None
+                continue
             rid = item.get("request_id")
             if not isinstance(rid, str) or rid not in req_map:
-                return None
+                continue
             if rid in used_requests:
-                return None
+                dropped_request_ids.append(rid)
+                continue
 
             agv_id = self._safe_int(item.get("agv_id"))
             rack_id = self._safe_int(item.get("rack_id"))
             picker_id = self._safe_int(item.get("picker_id"))
             if agv_id <= 0 or rack_id <= 0 or picker_id <= 0:
-                return None
+                dropped_request_ids.append(rid)
+                continue
 
             meta_agv = int(req_map[rid].get("agv_id", 0))
             if meta_agv != int(agv_id):
-                return None
+                dropped_request_ids.append(rid)
+                continue
 
             if (int(rack_id), int(picker_id)) not in allowed_pairs.get(rid, set()):
-                return None
+                dropped_request_ids.append(rid)
+                continue
 
             if unique_picker and int(picker_id) in used_pickers:
-                return None
+                dropped_request_ids.append(rid)
+                continue
             if unique_rack and int(rack_id) in used_racks:
-                return None
+                dropped_request_ids.append(rid)
+                continue
 
             used_requests.add(rid)
             used_pickers.add(int(picker_id))
@@ -1487,9 +1847,21 @@ class SymbioticCommLLMPlanner:
             )
 
         skipped: list[str] = []
+        skipped_seen: set[str] = set()
         for s in skipped_in:
             if isinstance(s, str) and s in req_map and s not in used_requests:
                 skipped.append(s)
+                skipped_seen.add(s)
+
+        for rid in dropped_request_ids:
+            if rid in req_map and rid not in used_requests and rid not in skipped_seen:
+                skipped.append(rid)
+                skipped_seen.add(rid)
+
+        for rid in req_map:
+            if rid not in used_requests and rid not in skipped_seen:
+                skipped.append(rid)
+                skipped_seen.add(rid)
 
         explanation = raw.get("explanation", "")
         if explanation is None:
@@ -1718,6 +2090,7 @@ class SymbioticCommLLMPlanner:
             minimal_reqs.append(
                 {
                     "request_id": r.get("request_id"),
+                    "stage1_proposal": r.get("stage1_proposal", {}),
                     "purpose": r.get("purpose"),
                     "options": [
                         {
