@@ -236,6 +236,19 @@ class SymbioticCommLLMPlanner:
 
         reserved_picker_ids_this_round: set[int] = set()
         reserved_rack_ids_this_round: set[int] = set()
+        active_reserved_picker_ids = {
+            int(assignment.get("picker_id", -1))
+            for assignment in self.active_assignments.values()
+            if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
+        }
+        available_pickers_for_round = [
+            agent
+            for agent in self._sorted_agents(state)
+            if agent.get("type") == "PICKER"
+            and not bool(agent.get("busy", False))
+            and int(agent["id"]) not in active_reserved_picker_ids
+        ]
+        remaining_assignment_budget = int(len(available_pickers_for_round))
 
         for batch_index, request_batch in enumerate(request_batches, start=1):
             batch_request_ids = [str(req.get("request_id", "")) for req in request_batch]
@@ -302,6 +315,16 @@ class SymbioticCommLLMPlanner:
 
             stage2_responses = self._sanitize_stage2_output(stage2_payload, stage2_raw)
             all_stage2_responses.extend(stage2_responses)
+            supportable_requests_in_this_batch = sum(
+                1
+                for resp in stage2_responses
+                if isinstance(resp, dict) and str(resp.get("overall_support", "")).upper() == "SUPPORT"
+            )
+            remaining_assignment_budget_before_stage3 = int(remaining_assignment_budget)
+            max_assignments_this_batch = min(
+                int(supportable_requests_in_this_batch),
+                int(remaining_assignment_budget),
+            )
 
             if self._all_requests_unsupported(stage2_responses):
                 stage3_final = self._build_no_assignment_batch_plan(stage2_responses)
@@ -317,9 +340,51 @@ class SymbioticCommLLMPlanner:
                         f"BATCH_{batch_index}_STAGE3_SHORT_CIRCUIT\n",
                         json.dumps(stage3_final, ensure_ascii=False, indent=2),
                     )
+                    print(
+                        f"BATCH_{batch_index}_SELECTION_BUDGET "
+                        f"{json.dumps({'supportable_requests_in_this_batch': int(supportable_requests_in_this_batch), 'remaining_assignment_budget_before_stage3': int(remaining_assignment_budget_before_stage3), 'max_assignments_this_batch': int(max_assignments_this_batch), 'kept_assignments_in_this_batch': 0, 'remaining_assignment_budget_after_batch': int(remaining_assignment_budget)}, ensure_ascii=False)}"
+                    )
                 continue
 
-            stage3_payload = self._build_stage3_payload(state, stage1_bundle, stage2_payload, stage2_responses)
+            if max_assignments_this_batch <= 0:
+                stage3_final = {
+                    "assignments": [],
+                    "skipped": [
+                        rid
+                        for rid in (
+                            resp.get("request_id")
+                            for resp in stage2_responses
+                            if isinstance(resp, dict)
+                        )
+                        if isinstance(rid, str)
+                    ],
+                    "explanation": "No remaining assignment budget for this batch.",
+                }
+                aggregate_skipped.extend(
+                    [
+                        rid
+                        for rid in stage3_final.get("skipped", [])
+                        if isinstance(rid, str)
+                    ]
+                )
+                if self.config.debug:
+                    print(
+                        f"BATCH_{batch_index}_STAGE3_SHORT_CIRCUIT\n",
+                        json.dumps(stage3_final, ensure_ascii=False, indent=2),
+                    )
+                    print(
+                        f"BATCH_{batch_index}_SELECTION_BUDGET "
+                        f"{json.dumps({'supportable_requests_in_this_batch': int(supportable_requests_in_this_batch), 'remaining_assignment_budget_before_stage3': int(remaining_assignment_budget_before_stage3), 'max_assignments_this_batch': int(max_assignments_this_batch), 'kept_assignments_in_this_batch': 0, 'remaining_assignment_budget_after_batch': int(remaining_assignment_budget)}, ensure_ascii=False)}"
+                    )
+                continue
+
+            stage3_payload = self._build_stage3_payload(
+                state,
+                stage1_bundle,
+                stage2_payload,
+                stage2_responses,
+                max_assignments_this_batch=max_assignments_this_batch,
+            )
             if self.config.debug:
                 print(f"BATCH_{batch_index}_STAGE3_PAYLOAD\n", json.dumps(stage3_payload, ensure_ascii=False, indent=2))
 
@@ -362,6 +427,9 @@ class SymbioticCommLLMPlanner:
                 reserved_rack_ids=reserved_rack_ids_this_round,
             )
             all_assignments.extend(batch_assignments)
+            remaining_assignment_budget -= len(batch_assignments)
+            if remaining_assignment_budget < 0:
+                remaining_assignment_budget = 0
             self._reserve_resources_from_assignments(
                 batch_assignments,
                 reserved_picker_ids_this_round,
@@ -372,6 +440,10 @@ class SymbioticCommLLMPlanner:
                 print(
                     f"BATCH_{batch_index}_ASSIGNMENTS\n",
                     json.dumps(batch_assignments, ensure_ascii=False, indent=2),
+                )
+                print(
+                    f"BATCH_{batch_index}_SELECTION_BUDGET "
+                    f"{json.dumps({'supportable_requests_in_this_batch': int(supportable_requests_in_this_batch), 'remaining_assignment_budget_before_stage3': int(remaining_assignment_budget_before_stage3), 'max_assignments_this_batch': int(max_assignments_this_batch), 'kept_assignments_in_this_batch': int(len(batch_assignments)), 'remaining_assignment_budget_after_batch': int(remaining_assignment_budget)}, ensure_ascii=False)}"
                 )
                 print(
                     f"BATCH_{batch_index}_ALL_ASSIGNMENTS_AFTER_EXTEND\n",
@@ -1628,6 +1700,7 @@ class SymbioticCommLLMPlanner:
         stage1_bundle: list[dict[str, Any]],
         stage2_payload: dict[str, Any],
         stage2_responses: list[dict[str, Any]],
+        max_assignments_this_batch: int,
     ) -> dict[str, Any]:
         """Build Stage 3 revision payload from Stage 1 proposal summary plus Stage 2 feedback."""
         fixed_direct_actions = self._build_fixed_direct_actions(state)
@@ -1742,6 +1815,9 @@ class SymbioticCommLLMPlanner:
                 "idle_pickers": int(sys_pressure.get("idle_pickers", 0)),
                 "active_cooperative_assignments": int(sys_pressure.get("active_cooperative_assignments", 0)),
             },
+            "selection_budget": {
+                "max_assignments_this_batch": int(max_assignments_this_batch),
+            },
             "constraints": {
                 "unique_picker": bool(self.config.unique_picker),
                 "unique_rack": bool(self.config.unique_rack),
@@ -1852,6 +1928,21 @@ class SymbioticCommLLMPlanner:
                     "rack_id": int(rack_id),
                 }
             )
+
+        max_assignments_this_batch = int(
+            self._safe_int(payload.get("selection_budget", {}).get("max_assignments_this_batch", -1))
+        )
+        if max_assignments_this_batch >= 0 and len(sanitized_assignments) > max_assignments_this_batch:
+            truncated_assignments = sanitized_assignments[max_assignments_this_batch:]
+            sanitized_assignments = sanitized_assignments[:max_assignments_this_batch]
+            used_requests = {
+                str(item.get("request_id"))
+                for item in sanitized_assignments
+                if isinstance(item, dict) and isinstance(item.get("request_id"), str)
+            }
+            for item in truncated_assignments:
+                if isinstance(item, dict) and isinstance(item.get("request_id"), str):
+                    dropped_request_ids.append(str(item.get("request_id")))
 
         skipped: list[str] = []
         skipped_seen: set[str] = set()
@@ -2125,26 +2216,41 @@ class SymbioticCommLLMPlanner:
         if self.enable_rationale:
             return stage3_system_prompt_v1()
         return stage3_system_prompt_v0()
+        
 
     def _stage3_user_prompt(self, payload: dict[str, Any]) -> str:
         requests = []
         for request in payload.get("requests", []):
             if not isinstance(request, dict):
                 continue
+            if str(request.get("overall_support", "DO_NOT_SUPPORT")).upper() != "SUPPORT":
+                continue
+            filtered_options = [
+                {
+                    "rack_id": option.get("rack_id"),
+                    "picker_id": option.get("picker_id"),
+                    "sync_cost": option.get("sync_cost"),
+                    "eta_gap": option.get("eta_gap"),
+                    "support_level": option.get("support_level"),
+                }
+                for option in request.get("options", [])
+                if isinstance(option, dict)
+                and str(option.get("support_level", "REJECT")).upper() in {"STRONG", "WEAK"}
+            ]
+            if not filtered_options:
+                continue
             item = {
                 "request_id": request.get("request_id"),
                 "agv_id": request.get("agv_id"),
-                "purpose": request.get("purpose"),
-                "stage1_proposal": request.get("stage1_proposal", {}),
-                "overall_support": request.get("overall_support", "DO_NOT_SUPPORT"),
-                "options": request.get("options", []),
-                "picker_reason": request.get("picker_reason", ""),
+                "stage1_proposal": {
+                    "primary_rack_id": request.get("stage1_proposal", {}).get("primary_rack_id", 0),
+                    "backup_rack_ids": request.get("stage1_proposal", {}).get("backup_rack_ids", []),
+                },
+                "options": filtered_options,
             }
             requests.append(item)
         minimal = {
-            "system_pressure": payload.get("system_pressure", {}),
-            "constraints": payload.get("constraints", {}),
-            "fixed_direct_actions": payload.get("fixed_direct_actions", []),
+            "selection_budget": payload.get("selection_budget", {}),
             "requests": requests,
         }
         return json.dumps(minimal, ensure_ascii=True)
