@@ -41,23 +41,24 @@ def stage2_system_prompt_v0() -> str:
         "\n"
         "Label meanings:\n"
         "- STRONG = clearly worth picker support now\n"
-        "- WEAK = not the best option, but still worth keeping\n"
+        "- WEAK = not the best option, but still worth keeping as a possible later choice\n"
         "- REJECT = not worth keeping\n"
         "\n"
         "Decision rules:\n"
         "1) sync_cost is the main criterion: lower sync_cost is generally better because the cooperative task finishes sooner and occupies picker support for less time.\n"
         "2) eta_gap is the next criterion: lower eta_gap is generally better because it means less AGV-picker mismatch and less waiting.\n"
         "3) eta_picker is only a secondary efficiency signal: use it mainly when options are similar in sync_cost and eta_gap.\n"
-        "4) If an option is clearly worse than the best option and has no other advantage, label it REJECT.\n"
+        "4) If an option is clearly worse than the best option and has no meaningful advantage, label it REJECT.\n"
         "5) Do not keep an option as WEAK merely because it is the second-best option in the request.\n"
-        "6) Use WEAK only when an option is worse than the best one, but still close enough in quality that keeping it may help later-stage selection.\n"
+        "6) Use WEAK when an option is worse than the best one, but still close enough in quality that keeping it may help later batch-level selection.\n"
         "7) If no option is worth keeping, label all options as REJECT.\n"
         "\n"
         "Scarcity rule:\n"
-        "1) If picker_scarcity is HIGH, filtering must become stricter.\n"
+        "1) If picker_scarcity is HIGH, filtering should become stricter.\n"
         "2) In HIGH scarcity conditions, an option should not be kept merely because it is feasible.\n"
-        "3) In HIGH scarcity conditions, options with clearly higher sync_cost than the best option should usually be labeled REJECT.\n"
-        "4) In HIGH scarcity conditions, REJECT should be common for clearly weaker options.\n"
+        "3) In HIGH scarcity conditions, clearly weaker options should usually be labeled REJECT.\n"
+        "4) In HIGH scarcity conditions, keep a WEAK option only if it is still reasonably close to the best option and may still be useful later.\n"
+        "5) Do not reject an option only because it is not the best; reject it when it is clearly not worth keeping.\n"
         "\n"
         "Request-level rule:\n"
         '- overall_support must be "SUPPORT" only if at least one option is STRONG or WEAK.\n'
@@ -66,12 +67,14 @@ def stage2_system_prompt_v0() -> str:
         "Important guidance:\n"
         "- Do not assume the Stage 1 primary deserves the strongest label.\n"
         "- Stage 2 should behave like a selective gatekeeper, not a soft sorter.\n"
+        "- Keep only a small number of genuinely useful alternatives.\n"
         "\n"
         "You must output a label for every option in the request. Do not omit any option.\n"
         "\n"
         "Output JSON only.\n"
         'Return exactly: {"responses":[{"request_id":"...","overall_support":"SUPPORT","option_feedback":[{"option_id":"OPT_0","support_level":"REJECT"},{"option_id":"OPT_1","support_level":"STRONG"},{"option_id":"OPT_2","support_level":"WEAK"}]}]}'
     )
+
 
 
 def stage3_system_prompt_v0() -> str:
@@ -118,12 +121,13 @@ def stage3_system_prompt_v0() -> str:
         "3) Revise to a backup only when that revision clearly improves the final batch.\n"
         "4) Do not revise for small or marginal local improvements.\n"
         "\n"
-        "Overall objective:\n"
-        "Return the best conflict-free subset under the batch quota.\n"
-        "It is better to return a smaller high-quality set than a larger weaker set.\n"
+        "Output requirements:\n"
+        "1) Output JSON only.\n"
+        "2) Each assignment object must include exactly these fields: request_id, agv_id, picker_id, rack_id.\n"
+        "3) Do not omit agv_id.\n"
+        "4) skipped must be a list of request_id strings.\n"
         "\n"
-        "Output JSON only.\n"
-        'Return exactly: {"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."]}'
+        'Return exactly this schema: {"assignments":[{"request_id":"...","agv_id":1,"picker_id":3,"rack_id":37}],"skipped":["..."]}'
     )
 
 
