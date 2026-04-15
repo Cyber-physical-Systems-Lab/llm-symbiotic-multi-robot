@@ -1285,6 +1285,7 @@ class SymbioticCommLLMPlanner:
             and int(a["id"]) not in reserved_picker_ids
         ]
         idle_pickers = len(available_pickers)
+        picker_scarcity = "high" if idle_pickers < idle_agvs else "low"
 
         requests_payload: list[dict[str, Any]] = []
         for req in stage1_bundle:
@@ -1392,13 +1393,15 @@ class SymbioticCommLLMPlanner:
                     selected_pairs.add(pair_key)
 
             for idx, option in enumerate(request_options):
+                eta_agv = int(option.get("eta_agv", -1))
+                eta_picker = int(option.get("eta_picker", -1))
                 option["option_id"] = f"OPT_{idx}"
+                option["sync_cost"] = max(eta_agv, eta_picker) if eta_agv >= 0 and eta_picker >= 0 else -1
+                option["eta_gap"] = abs(eta_agv - eta_picker) if eta_agv >= 0 and eta_picker >= 0 else -1
 
             requests_payload.append(
                 {
                     "request_id": request_id,
-                    "agv_id": int(agv_id),
-                    "purpose": purpose,
                     "stage1_proposal": {
                         "primary_rack_id": int(primary_rack_id) if primary_rack_id > 0 else 0,
                         "backup_rack_ids": [
@@ -1416,6 +1419,10 @@ class SymbioticCommLLMPlanner:
 
         return {
             "system_pressure": {
+                "idle_pickers": int(idle_pickers),
+                "picker_scarcity": picker_scarcity,
+            },
+            "_stage3_system_pressure": {
                 "idle_agvs": int(idle_agvs),
                 "idle_pickers": int(idle_pickers),
                 "active_cooperative_assignments": int(len(self.active_assignments)),
@@ -1725,7 +1732,7 @@ class SymbioticCommLLMPlanner:
                 }
             )
 
-        sys_pressure = stage2_payload.get("system_pressure", {})
+        sys_pressure = stage2_payload.get("_stage3_system_pressure", stage2_payload.get("system_pressure", {}))
         if not isinstance(sys_pressure, dict):
             sys_pressure = {}
 
@@ -2091,14 +2098,14 @@ class SymbioticCommLLMPlanner:
                 {
                     "request_id": r.get("request_id"),
                     "stage1_proposal": r.get("stage1_proposal", {}),
-                    "purpose": r.get("purpose"),
                     "options": [
                         {
                             "option_id": opt.get("option_id"),
                             "rack_id": opt.get("rack_id"),
                             "picker_id": opt.get("picker_id"),
+                            "sync_cost": opt.get("sync_cost"),
+                            "eta_gap": opt.get("eta_gap"),
                             "eta_picker": opt.get("eta_picker"),
-                            "eta_agv": opt.get("eta_agv"),
                         }
                         for opt in r.get("options", [])
                         if isinstance(opt, dict)
