@@ -1649,8 +1649,8 @@ class SymbioticCommLLMPlanner:
                 continue
             stage1_req = stage1_by_id.get(rid, {})
             req_meta[rid] = {
-                "agv_id": int(req.get("agv_id", 0)),
-                "purpose": str(req.get("purpose", "")),
+                "agv_id": int(stage1_req.get("agv_id", 0)),
+                "purpose": str(stage1_req.get("purpose", "")),
                 "primary_rack_id": int(stage1_req.get("primary_rack_id", 0)),
                 "backup_rack_ids": [
                     int(b)
