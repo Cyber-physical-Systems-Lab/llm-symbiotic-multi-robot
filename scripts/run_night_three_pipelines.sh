@@ -11,7 +11,7 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=1
+EPISODES=3
 SEED=1
 MAX_STEPS=1500
 

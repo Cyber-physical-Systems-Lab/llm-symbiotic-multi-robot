@@ -66,7 +66,7 @@ class EpisodeRunner:
         try:
             if str(self.config.env_id).startswith("tarware-"):
                 import tarware  # noqa: F401
-            return gym.make(self.config.env_id)
+            return gym.make(self.config.env_id, max_steps=self.config.max_steps)
         except Exception as exc:
             raise RuntimeError(f"Failed to create environment '{self.config.env_id}': {exc}") from exc
 

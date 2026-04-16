@@ -61,6 +61,8 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
         zero_option_unreachable = 0
         zero_option_no_idle_picker = 0
 
+        episode_records: list[dict[str, Any]] = []
+
         while steps < self.config.max_steps:
             if self.config.render:
                 env.render(self.config.render_mode)
@@ -117,40 +119,50 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             zero_option_unreachable += int(comm_diagnostics["zero_option_unreachable"])
             zero_option_no_idle_picker += int(comm_diagnostics["zero_option_no_idle_picker"])
 
+            record = {
+                "episode_idx": episode_idx,
+                "step_idx": steps,
+                "planner_schema": "non_mutualistic_comm_llm_v1",
+                "stage2_semantics": "ack_busy_committed_target",
+                "actions": actions,
+                "info": self._to_jsonable(info),
+                "reward_sum": reward_sum,
+                "state_min": {
+                    "agents": state["agents"],
+                    "requests_rack_ids_topk": state["requests_rack_ids_topk"],
+                    "empty_rack_ids_topk": state["empty_rack_ids_topk"],
+                    "goal_ids": state["goal_ids"],
+                },
+                "comm_request": comm_payload["comm_request"],
+                "comm_response": comm_payload["comm_response"],
+                "comm_final_plan": comm_payload["comm_final_plan"],
+                "communication_used": comm_payload["communication_used"],
+                "planner_last_communication_triggered": comm_payload["planner_last_communication_triggered"],
+                "planner_throttled_by_budget": comm_payload["planner_throttled_by_budget"],
+                "planner_has_request": comm_payload["planner_has_request"],
+                "planner_has_response": comm_payload["planner_has_response"],
+                "planner_has_final_plan": comm_payload["planner_has_final_plan"],
+                "comm_diagnostics": comm_diagnostics,
+                "ack_count": ack_count,
+                "busy_count": busy_count,
+            }
+            episode_records.append(record)
+
             if jsonl_handle is not None:
-                record = {
-                    "episode_idx": episode_idx,
-                    "step_idx": steps,
-                    "planner_schema": "non_mutualistic_comm_llm_v1",
-                    "stage2_semantics": "ack_busy_committed_target",
-                    "actions": actions,
-                    "info": self._to_jsonable(info),
-                    "reward_sum": reward_sum,
-                    "state_min": {
-                        "agents": state["agents"],
-                        "requests_rack_ids_topk": state["requests_rack_ids_topk"],
-                        "empty_rack_ids_topk": state["empty_rack_ids_topk"],
-                        "goal_ids": state["goal_ids"],
-                    },
-                    "comm_request": comm_payload["comm_request"],
-                    "comm_response": comm_payload["comm_response"],
-                    "comm_final_plan": comm_payload["comm_final_plan"],
-                    "communication_used": comm_payload["communication_used"],
-                    "planner_last_communication_triggered": comm_payload["planner_last_communication_triggered"],
-                    "planner_throttled_by_budget": comm_payload["planner_throttled_by_budget"],
-                    "planner_has_request": comm_payload["planner_has_request"],
-                    "planner_has_response": comm_payload["planner_has_response"],
-                    "planner_has_final_plan": comm_payload["planner_has_final_plan"],
-                    "comm_diagnostics": comm_diagnostics,
-                    "ack_count": ack_count,
-                    "busy_count": busy_count,
-                }
                 jsonl_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
             steps += 1
             done = all(bool(flag) for flag in terminateds)
             if done:
                 break
+
+        total_cooperative_waiting_time = self._compute_cooperative_waiting_time(episode_records)
+        cooperative_attempts = self._count_cooperative_attempts(episode_records)
+        (
+            assigned_cooperative_tasks,
+            total_assigned_sync_cost,
+            total_assigned_eta_gap,
+        ) = self._compute_assigned_assignment_quality_metrics(episode_records)
 
         return {
             "episode_idx": episode_idx,
@@ -176,6 +188,18 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             "stage2_zero_option_requests": stage2_zero_option_requests,
             "zero_option_unreachable": zero_option_unreachable,
             "zero_option_no_idle_picker": zero_option_no_idle_picker,
+            "total_cooperative_waiting_time": total_cooperative_waiting_time,
+            "cooperative_attempts": cooperative_attempts,
+            "avg_cooperative_waiting_time": self._safe_ratio(
+                total_cooperative_waiting_time, cooperative_attempts
+            ),
+            "assigned_cooperative_tasks": assigned_cooperative_tasks,
+            "avg_assigned_cooperative_completion_time": self._safe_ratio(
+                total_assigned_sync_cost, assigned_cooperative_tasks
+            ),
+            "avg_assigned_coordination_mismatch": self._safe_ratio(
+                total_assigned_eta_gap, assigned_cooperative_tasks
+            ),
             "planner_schema": "non_mutualistic_comm_llm_v1",
             "stage2_semantics": "ack_busy_committed_target",
         }
@@ -207,6 +231,224 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             elif status == "BUSY":
                 busy_count += 1
         return ack_count, busy_count
+
+    def _compute_cooperative_waiting_time(self, records: list[dict[str, Any]]) -> int:
+        """
+        Compute cumulative cooperative waiting time for one episode.
+
+        Definition:
+        - AGV target is a non-goal location
+        - AGV has already reached that target location
+        - cooperative phase is still unfinished
+        """
+        total_wait_steps = 0
+
+        for record in records:
+            state_min = record.get("state_min", {})
+            if not isinstance(state_min, dict):
+                continue
+
+            agents = state_min.get("agents", [])
+            if not isinstance(agents, list):
+                continue
+
+            goal_ids = {
+                int(loc_id) for loc_id in state_min.get("goal_ids", []) if self._is_int_like(loc_id)
+            }
+
+            for agent in agents:
+                if not isinstance(agent, dict):
+                    continue
+                if str(agent.get("type", "")) != "AGV":
+                    continue
+
+                target = self._safe_int(agent.get("target", 0))
+                if target == 0 or target in goal_ids:
+                    continue
+
+                coords_yx = agent.get("coords_yx")
+                target_coords_yx = agent.get("target_coords_yx")
+
+                if not self._same_coords(coords_yx, target_coords_yx):
+                    continue
+
+                total_wait_steps += 1
+
+        return total_wait_steps
+
+    def _count_cooperative_attempts(self, records: list[dict[str, Any]]) -> int:
+        """
+        Count cooperative attempts in one episode.
+
+        A cooperative attempt is counted when an AGV enters a new non-goal target phase.
+        """
+        attempts = 0
+        active_targets_by_agv: dict[int, int] = {}
+
+        for record in records:
+            state_min = record.get("state_min", {})
+            if not isinstance(state_min, dict):
+                continue
+
+            goal_ids = {
+                int(loc_id) for loc_id in state_min.get("goal_ids", []) if self._is_int_like(loc_id)
+            }
+            agents = state_min.get("agents", [])
+            if not isinstance(agents, list):
+                continue
+
+            seen_agvs_this_step: set[int] = set()
+
+            for agent in agents:
+                if not isinstance(agent, dict):
+                    continue
+                if str(agent.get("type", "")) != "AGV":
+                    continue
+
+                agv_id = self._safe_int(agent.get("id", 0))
+                target = self._safe_int(agent.get("target", 0))
+                seen_agvs_this_step.add(agv_id)
+
+                if target == 0 or target in goal_ids:
+                    active_targets_by_agv.pop(agv_id, None)
+                    continue
+
+                previous_target = active_targets_by_agv.get(agv_id)
+                if previous_target != target:
+                    attempts += 1
+                    active_targets_by_agv[agv_id] = target
+
+            for agv_id in list(active_targets_by_agv.keys()):
+                if agv_id not in seen_agvs_this_step:
+                    active_targets_by_agv.pop(agv_id, None)
+
+        return attempts
+
+    def _compute_assigned_assignment_quality_metrics(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[int, float, float]:
+        """
+        Compute assignment-quality metrics for one episode.
+
+        Returns:
+        - assigned_task_count
+        - sum_assigned_sync_cost
+        - sum_assigned_eta_gap
+
+        Each final assignment is matched back to comm_response.responses[].options
+        using:
+        - request_id
+        - rack_id
+        - picker_id
+        """
+        assigned_task_count = 0
+        sum_assigned_sync_cost = 0.0
+        sum_assigned_eta_gap = 0.0
+
+        for record in records:
+            comm_final_plan = record.get("comm_final_plan")
+            if not isinstance(comm_final_plan, dict):
+                continue
+
+            assignments = comm_final_plan.get("assignments", [])
+            if not isinstance(assignments, list) or not assignments:
+                continue
+
+            comm_response = record.get("comm_response")
+            if not isinstance(comm_response, dict):
+                continue
+
+            responses = comm_response.get("responses", [])
+            if not isinstance(responses, list):
+                continue
+
+            option_index: dict[tuple[str, int, int], dict[str, Any]] = {}
+            for response in responses:
+                if not isinstance(response, dict):
+                    continue
+                request_id = response.get("request_id")
+                if not isinstance(request_id, str):
+                    continue
+
+                options = response.get("options", [])
+                if not isinstance(options, list):
+                    continue
+
+                for option in options:
+                    if not isinstance(option, dict):
+                        continue
+                    rack_id = self._safe_int(option.get("rack_id", 0))
+                    picker_id = self._safe_int(option.get("picker_id", 0))
+                    if rack_id <= 0 or picker_id <= 0:
+                        continue
+                    option_index[(request_id, rack_id, picker_id)] = option
+
+            for assignment in assignments:
+                if not isinstance(assignment, dict):
+                    continue
+
+                request_id = assignment.get("request_id")
+                if not isinstance(request_id, str):
+                    continue
+
+                rack_id = self._safe_int(assignment.get("rack_id", 0))
+                picker_id = self._safe_int(assignment.get("picker_id", 0))
+                if rack_id <= 0 or picker_id <= 0:
+                    continue
+
+                option = option_index.get((request_id, rack_id, picker_id))
+                if not isinstance(option, dict):
+                    continue
+
+                sync_cost = option.get("sync_cost")
+                eta_gap = option.get("eta_gap")
+                if not self._is_number_like(sync_cost) or not self._is_number_like(eta_gap):
+                    continue
+
+                assigned_task_count += 1
+                sum_assigned_sync_cost += float(sync_cost)
+                sum_assigned_eta_gap += float(eta_gap)
+
+        return assigned_task_count, sum_assigned_sync_cost, sum_assigned_eta_gap
+
+    def _same_coords(self, a: Any, b: Any) -> bool:
+        ayx = self._normalize_coords_yx(a)
+        byx = self._normalize_coords_yx(b)
+        if ayx is None or byx is None:
+            return False
+        return ayx == byx
+
+    def _normalize_coords_yx(self, value: Any) -> tuple[int, int] | None:
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            if self._is_int_like(value[0]) and self._is_int_like(value[1]):
+                return int(value[0]), int(value[1])
+        return None
+
+    def _safe_ratio(self, num: float, den: float) -> float:
+        if den == 0:
+            return 0.0
+        return float(num) / float(den)
+
+    def _safe_int(self, value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _is_int_like(self, value: Any) -> bool:
+        try:
+            int(value)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def _is_number_like(self, value: Any) -> bool:
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return False
+        return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -371,6 +613,18 @@ def main() -> int:
     print(f"mean_clashes: {mean_metric(episode_summaries, 'total_clashes'):.3f}")
     print(f"mean_stucks: {mean_metric(episode_summaries, 'total_stucks'):.3f}")
     print(f"mean_comm_steps: {mean_metric(episode_summaries, 'communication_steps'):.3f}")
+    print(
+        "mean_avg_cooperative_waiting_time: "
+        f"{mean_metric(episode_summaries, 'avg_cooperative_waiting_time'):.3f}"
+    )
+    print(
+        "mean_avg_assigned_cooperative_completion_time: "
+        f"{mean_metric(episode_summaries, 'avg_assigned_cooperative_completion_time'):.3f}"
+    )
+    print(
+        "mean_avg_assigned_coordination_mismatch: "
+        f"{mean_metric(episode_summaries, 'avg_assigned_coordination_mismatch'):.3f}"
+    )
     return 0
 
 

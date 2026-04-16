@@ -36,10 +36,15 @@ def summarize_behavior(records: list[dict]) -> dict:
 
     total_pair_switches = 0
     total_cooperative_waiting_time = 0
+    total_cooperative_attempts = 0
     total_steps_with_clashes = 0
     total_clashes = 0
     total_agv_episode_count = 0
     total_completed_deliveries = 0
+
+    total_assigned_cooperative_tasks = 0
+    total_assigned_sync_cost = 0.0
+    total_assigned_eta_gap = 0.0
 
     rack_counter: Counter[int] = Counter()
     episode_breakdown: dict[int, dict[str, Any]] = {}
@@ -47,24 +52,44 @@ def summarize_behavior(records: list[dict]) -> dict:
     for episode_idx, episode_records in records_by_episode.items():
         pair_switches, agv_count = _count_pair_switches(episode_records)
         cooperative_waiting_time = _compute_cooperative_waiting_time(episode_records)
+        cooperative_attempts = _count_cooperative_attempts(episode_records)
         steps_with_clashes = _count_steps_with_clashes(episode_records)
         clashes = _count_total_clashes(episode_records)
         deliveries = _count_completed_deliveries(episode_records)
+
+        assigned_task_count, assigned_sync_cost_sum, assigned_eta_gap_sum = (
+            _compute_assigned_assignment_quality_metrics(episode_records)
+        )
 
         _update_rack_counter(episode_records, rack_counter)
 
         total_pair_switches += pair_switches
         total_agv_episode_count += agv_count
         total_cooperative_waiting_time += cooperative_waiting_time
+        total_cooperative_attempts += cooperative_attempts
         total_steps_with_clashes += steps_with_clashes
         total_clashes += clashes
         total_completed_deliveries += deliveries
 
+        total_assigned_cooperative_tasks += assigned_task_count
+        total_assigned_sync_cost += assigned_sync_cost_sum
+        total_assigned_eta_gap += assigned_eta_gap_sum
+
         episode_breakdown[episode_idx] = {
             "pair_switches": pair_switches,
             "completed_deliveries": deliveries,
+            "cooperative_attempts": cooperative_attempts,
             "total_cooperative_waiting_time": cooperative_waiting_time,
-            "avg_cooperative_waiting_time": _safe_ratio(cooperative_waiting_time, deliveries),
+            "avg_cooperative_waiting_time": _safe_ratio(
+                cooperative_waiting_time, cooperative_attempts
+            ),
+            "assigned_cooperative_tasks": assigned_task_count,
+            "avg_assigned_cooperative_completion_time": _safe_ratio(
+                assigned_sync_cost_sum, assigned_task_count
+            ),
+            "avg_assigned_coordination_mismatch": _safe_ratio(
+                assigned_eta_gap_sum, assigned_task_count
+            ),
             "total_clashes": clashes,
             "steps_with_clashes": steps_with_clashes,
         }
@@ -82,9 +107,17 @@ def summarize_behavior(records: list[dict]) -> dict:
         "avg_completed_deliveries_per_episode": _safe_ratio(
             total_completed_deliveries, episode_count
         ),
+        "total_cooperative_attempts": total_cooperative_attempts,
         "total_cooperative_waiting_time": total_cooperative_waiting_time,
         "avg_cooperative_waiting_time": _safe_ratio(
-            total_cooperative_waiting_time, total_completed_deliveries
+            total_cooperative_waiting_time, total_cooperative_attempts
+        ),
+        "total_assigned_cooperative_tasks": total_assigned_cooperative_tasks,
+        "avg_assigned_cooperative_completion_time": _safe_ratio(
+            total_assigned_sync_cost, total_assigned_cooperative_tasks
+        ),
+        "avg_assigned_coordination_mismatch": _safe_ratio(
+            total_assigned_eta_gap, total_assigned_cooperative_tasks
         ),
         "total_clashes": total_clashes,
         "total_steps_with_clashes": total_steps_with_clashes,
@@ -113,6 +146,7 @@ def print_summary(summary: dict) -> None:
         "avg_completed_deliveries_per_episode: "
         f"{float(summary.get('avg_completed_deliveries_per_episode', 0.0)):.3f}"
     )
+    print(f"total_cooperative_attempts: {summary.get('total_cooperative_attempts', 0)}")
     print(
         "total_cooperative_waiting_time: "
         f"{float(summary.get('total_cooperative_waiting_time', 0.0)):.3f}"
@@ -120,6 +154,18 @@ def print_summary(summary: dict) -> None:
     print(
         "avg_cooperative_waiting_time: "
         f"{float(summary.get('avg_cooperative_waiting_time', 0.0)):.3f}"
+    )
+    print(
+        "total_assigned_cooperative_tasks: "
+        f"{summary.get('total_assigned_cooperative_tasks', 0)}"
+    )
+    print(
+        "avg_assigned_cooperative_completion_time: "
+        f"{float(summary.get('avg_assigned_cooperative_completion_time', 0.0)):.3f}"
+    )
+    print(
+        "avg_assigned_coordination_mismatch: "
+        f"{float(summary.get('avg_assigned_coordination_mismatch', 0.0)):.3f}"
     )
     print(f"total_clashes: {summary.get('total_clashes', 0)}")
     print(f"total_steps_with_clashes: {summary.get('total_steps_with_clashes', 0)}")
@@ -134,8 +180,12 @@ def print_summary(summary: dict) -> None:
                 f"  ep{episode_idx}: "
                 f"pair_switches={item.get('pair_switches', 0)} "
                 f"completed_deliveries={item.get('completed_deliveries', 0)} "
+                f"cooperative_attempts={item.get('cooperative_attempts', 0)} "
                 f"total_cooperative_waiting_time={float(item.get('total_cooperative_waiting_time', 0.0)):.3f} "
                 f"avg_cooperative_waiting_time={float(item.get('avg_cooperative_waiting_time', 0.0)):.3f} "
+                f"assigned_cooperative_tasks={item.get('assigned_cooperative_tasks', 0)} "
+                f"avg_assigned_cooperative_completion_time={float(item.get('avg_assigned_cooperative_completion_time', 0.0)):.3f} "
+                f"avg_assigned_coordination_mismatch={float(item.get('avg_assigned_coordination_mismatch', 0.0)):.3f} "
                 f"total_clashes={item.get('total_clashes', 0)} "
                 f"steps_with_clashes={item.get('steps_with_clashes', 0)}"
             )
@@ -264,13 +314,152 @@ def _compute_cooperative_waiting_time(records: list[dict]) -> int:
             if not _same_coords(coords_yx, target_coords_yx):
                 continue
 
-            # Once the AGV has reached a non-goal target and the cooperative
-            # phase is not yet completed, we count one waiting step.
-            # - not carrying -> LOAD waiting
-            # - carrying     -> UNLOAD waiting
             total_wait_steps += 1
 
     return total_wait_steps
+
+
+def _count_cooperative_attempts(records: list[dict]) -> int:
+    """
+    Count cooperative attempts in one episode.
+
+    Operational definition:
+    A cooperative attempt is counted when an AGV enters a new non-goal target
+    phase, i.e. a new rack-level cooperative interaction episode.
+
+    This includes attempts that may later fail and never become completed
+    deliveries.
+    """
+    attempts = 0
+    active_targets_by_agv: dict[int, int] = {}
+
+    for record in records:
+        state_min = record.get("state_min", {})
+        if not isinstance(state_min, dict):
+            continue
+
+        goal_ids = {
+            int(loc_id) for loc_id in state_min.get("goal_ids", []) if _is_int_like(loc_id)
+        }
+        agents = state_min.get("agents", [])
+        if not isinstance(agents, list):
+            continue
+
+        seen_agvs_this_step: set[int] = set()
+
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            if str(agent.get("type", "")) != "AGV":
+                continue
+
+            agv_id = _safe_int(agent.get("id", 0))
+            target = _safe_int(agent.get("target", 0))
+            seen_agvs_this_step.add(agv_id)
+
+            if target == 0 or target in goal_ids:
+                active_targets_by_agv.pop(agv_id, None)
+                continue
+
+            previous_target = active_targets_by_agv.get(agv_id)
+            if previous_target != target:
+                attempts += 1
+                active_targets_by_agv[agv_id] = target
+
+        for agv_id in list(active_targets_by_agv.keys()):
+            if agv_id not in seen_agvs_this_step:
+                active_targets_by_agv.pop(agv_id, None)
+
+    return attempts
+
+
+def _compute_assigned_assignment_quality_metrics(
+    records: list[dict],
+) -> tuple[int, float, float]:
+    """
+    Compute assignment-quality metrics for one episode.
+
+    Returns:
+    - assigned_task_count
+    - sum_assigned_sync_cost
+    - sum_assigned_eta_gap
+
+    Matching rule:
+    Each final assignment in comm_final_plan.assignments is matched back to the
+    corresponding option in comm_response.responses[].options using:
+    - request_id
+    - rack_id
+    - picker_id
+    """
+    assigned_task_count = 0
+    sum_assigned_sync_cost = 0.0
+    sum_assigned_eta_gap = 0.0
+
+    for record in records:
+        comm_final_plan = record.get("comm_final_plan")
+        if not isinstance(comm_final_plan, dict):
+            continue
+
+        assignments = comm_final_plan.get("assignments", [])
+        if not isinstance(assignments, list) or not assignments:
+            continue
+
+        comm_response = record.get("comm_response")
+        if not isinstance(comm_response, dict):
+            continue
+
+        responses = comm_response.get("responses", [])
+        if not isinstance(responses, list):
+            continue
+
+        option_index: dict[tuple[str, int, int], dict[str, Any]] = {}
+        for response in responses:
+            if not isinstance(response, dict):
+                continue
+            request_id = response.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+
+            options = response.get("options", [])
+            if not isinstance(options, list):
+                continue
+
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                rack_id = _safe_int(option.get("rack_id", 0))
+                picker_id = _safe_int(option.get("picker_id", 0))
+                if rack_id <= 0 or picker_id <= 0:
+                    continue
+                option_index[(request_id, rack_id, picker_id)] = option
+
+        for assignment in assignments:
+            if not isinstance(assignment, dict):
+                continue
+
+            request_id = assignment.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+
+            rack_id = _safe_int(assignment.get("rack_id", 0))
+            picker_id = _safe_int(assignment.get("picker_id", 0))
+            if rack_id <= 0 or picker_id <= 0:
+                continue
+
+            option = option_index.get((request_id, rack_id, picker_id))
+            if not isinstance(option, dict):
+                continue
+
+            sync_cost = option.get("sync_cost")
+            eta_gap = option.get("eta_gap")
+            if not _is_number_like(sync_cost) or not _is_number_like(eta_gap):
+                continue
+
+            assigned_task_count += 1
+            sum_assigned_sync_cost += float(sync_cost)
+            sum_assigned_eta_gap += float(eta_gap)
+
+    return assigned_task_count, sum_assigned_sync_cost, sum_assigned_eta_gap
 
 
 def _count_steps_with_clashes(records: list[dict]) -> int:
@@ -371,6 +560,15 @@ def _is_int_like(value: Any) -> bool:
     """Return whether a value can be interpreted as an int."""
     try:
         int(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _is_number_like(value: Any) -> bool:
+    """Return whether a value can be interpreted as a float."""
+    try:
+        float(value)
     except (TypeError, ValueError):
         return False
     return True
