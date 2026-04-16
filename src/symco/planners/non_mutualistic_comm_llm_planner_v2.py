@@ -524,33 +524,47 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
     def _stage1_system_prompt(self) -> str:
         return (
-            "You are the AGV-side coordinator in a non-mutualistic setting with partner awareness. "
-            "For each request, choose exactly one committed rack from the provided candidates. "
-            "Use AGV-side decision logic with only coarse partner-awareness signals.\n"
-            "Allowed factors:\n"
-            "1) Feasibility: choose only from the provided candidates.\n"
-            "2) Travel efficiency: lower eta_agv is better.\n"
-            "3) Coarse support awareness: nearby_idle_pickers and picker_scarcity may be used only as secondary context.\n"
-            "4) Region-load caution: if candidates are otherwise similar, prefer less loaded regions.\n"
+            "You are the AGV-side coordinator in a non-mutualistic setting.\n"
+            "\n"
+            "Task:\n"
+            "For each request, choose exactly one committed rack from the provided candidates.\n"
+            "Your choice is unilateral: choose one rack now and commit to it.\n"
+            "\n"
+            "What the input means:\n"
+            "- picker_scarcity tells you whether picker support is scarce or not.\n"
+            "- region_load shows how much current cooperative load is already associated with each region.\n"
+            "- eta_agv is the AGV-side travel cost to the candidate rack.\n"
+            "- nearby_idle_pickers is a coarse support-side signal. Higher values mean picker support is more likely to be nearby.\n"
+            "\n"
+            "Decision rules:\n"
+            "1) eta_agv is the main decision factor: lower eta_agv is generally better.\n"
+            "2) If several candidates are similar in eta_agv, prefer the one with stronger coarse support potential, such as higher nearby_idle_pickers.\n"
+            "3) If candidates are otherwise similar, prefer the one in a less loaded region.\n"
+            "4) If picker_scarcity is high, be more careful about committing to racks with weak nearby support when better-supported alternatives are available.\n"
+            "5) Do not choose a much worse eta_agv option only because its nearby_idle_pickers value is slightly better.\n"
+            "\n"
             "Batch rule:\n"
             "- Do not commit the same rack for two different requests in the same batch.\n"
-            "Do NOT do any of the following:\n"
-            "- Do NOT negotiate with the picker side.\n"
-            "- Do NOT output backups.\n"
-            "- Do NOT output multiple racks per request.\n"
-            "- Do NOT assume any later revision of the committed rack.\n"
-            "Return JSON only: "
-            '{"requests":[{"request_id":"...","committed_rack_id":37}]}'
+            "\n"
+            "Important limits:\n"
+            "- Use only the provided candidates.\n"
+            "- Choose exactly one committed rack per request.\n"
+            "\n"
+            "Output JSON only.\n"
+            'Return exactly: {"requests":[{"request_id":"...","committed_rack_id":37}]}'
         )
 
     def _stage1_user_prompt(self, payload: dict[str, Any]) -> str:
         minimal = {
-            "system_pressure": payload.get("system_pressure", {}),
+            "system_pressure": {
+                "idle_pickers": payload.get("system_pressure", {}).get("idle_pickers", 0),
+                "picker_scarcity": payload.get("system_pressure", {}).get("picker_scarcity", "low"),
+                "region_load": payload.get("system_pressure", {}).get("region_load", {}),
+            },
             "requests": [
                 {
                     "request_id": req.get("request_id"),
                     "agv_id": req.get("agv_id"),
-                    "purpose": req.get("purpose"),
                     "candidates": [
                         {
                             "rack_id": cand.get("rack_id"),
@@ -611,10 +625,11 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         requests_payload: list[dict[str, Any]] = []
         for req in stage1_bundle:
             request_id = str(req["request_id"])
-            agv_id = int(req["agv_id"])
-            purpose = str(req["purpose"])
             committed_rack_id = self._safe_int(req.get("committed_rack_id"))
             if committed_rack_id <= 0:
+                continue
+            eta_agv = self._lookup_stage1_eta_agv(req, committed_rack_id)
+            if eta_agv < 0:
                 continue
 
             picker_candidates: list[dict[str, Any]] = []
@@ -626,10 +641,13 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 )
                 if eta_picker is None:
                     continue
+                eta_picker = int(eta_picker)
                 picker_candidates.append(
                     {
                         "picker_id": int(picker_id),
-                        "eta_picker": int(eta_picker),
+                        "sync_cost": max(int(eta_agv), eta_picker),
+                        "eta_gap": abs(int(eta_agv) - eta_picker),
+                        "eta_picker": eta_picker,
                     }
                 )
 
@@ -644,8 +662,6 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             requests_payload.append(
                 {
                     "request_id": request_id,
-                    "agv_id": int(agv_id),
-                    "purpose": purpose,
                     "committed_rack_id": int(committed_rack_id),
                     "picker_candidates": picker_candidates,
                 }
@@ -744,22 +760,45 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
     def _stage2_system_prompt(self) -> str:
         return (
-            "You are the picker-side coordinator in a non-mutualistic setting with partner awareness. "
-            "Each request already has one committed rack chosen by the AGV side. "
-            "Your job is only to decide, from the picker-side perspective, whether that committed rack is worth supporting.\n"
-            "Use only picker-side considerations:\n"
-            "1) Support feasibility: if no picker candidate can support the committed rack, return BUSY.\n"
-            "2) Picker-side cost: eta_picker is the main decision factor.\n"
-            "3) Picker scarcity: when idle pickers are scarce, be more conservative about clearly high eta_picker requests.\n"
+            "You are the picker-side coordinator in a non-mutualistic setting.\n"
+            "\n"
+            "Task:\n"
+            "Each request already has one committed rack.\n"
+            "Your job is to decide whether that committed rack is worth picker support now.\n"
+            "For each request, either:\n"
+            "- return ACK with exactly one picker_id, or\n"
+            "- return BUSY.\n"
+            "\n"
+            "What the input means:\n"
+            "- picker_scarcity tells you whether picker support is scarce or not.\n"
+            "- Each picker candidate is one possible picker for the already committed rack.\n"
+            "- sync_cost is the main task-level cost. Lower sync_cost is generally better.\n"
+            "- eta_gap shows AGV-picker mismatch. Lower eta_gap is generally better.\n"
+            "- eta_picker is the picker-side travel cost. Lower eta_picker is generally better.\n"
+            "\n"
+            "Decision rules:\n"
+            "1) sync_cost is the main decision factor.\n"
+            "2) eta_gap is the next decision factor.\n"
+            "3) eta_picker is only a secondary tie-break signal when sync_cost and eta_gap are similar.\n"
+            "4) If a request has no picker candidates, return BUSY.\n"
+            "5) If the committed rack is not worth supporting now, return BUSY.\n"
+            "6) If you return ACK, choose the picker candidate that gives the best support for that committed rack.\n"
+            "\n"
+            "Scarcity rule:\n"
+            "1) If picker_scarcity is high, be more conservative.\n"
+            "2) In high scarcity conditions, do not ACK a request merely because it is feasible.\n"
+            "3) In high scarcity conditions, if the available picker candidates have clearly high sync_cost or clearly poor eta_gap, return BUSY.\n"
+            "\n"
             "Batch rule:\n"
             "- Do not ACK two different requests with the same picker in the same batch.\n"
-            "Do NOT do any of the following:\n"
-            "- Do NOT suggest another rack.\n"
-            "- Do NOT compare alternative racks.\n"
-            "- Do NOT negotiate with the AGV side.\n"
-            "- Do NOT assume the committed rack can be revised later.\n"
-            "Return JSON only: "
-            '{"responses":[{"request_id":"...","status":"ACK","picker_id":5}]}'
+            "\n"
+            "Important limits:\n"
+            "- Do not change the committed rack.\n"
+            "- Do not suggest another rack.\n"
+            "- Use only the provided picker candidates.\n"
+            "\n"
+            "Output JSON only.\n"
+            'Return exactly: {"responses":[{"request_id":"...","status":"ACK","picker_id":5}]}'
         )
 
     def _stage2_user_prompt(self, payload: dict[str, Any]) -> str:
@@ -770,12 +809,12 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             minimal_requests.append(
                 {
                     "request_id": req.get("request_id"),
-                    "agv_id": req.get("agv_id"),
-                    "purpose": req.get("purpose"),
                     "committed_rack_id": req.get("committed_rack_id"),
                     "picker_candidates": [
                         {
                             "picker_id": candidate.get("picker_id"),
+                            "sync_cost": candidate.get("sync_cost"),
+                            "eta_gap": candidate.get("eta_gap"),
                             "eta_picker": candidate.get("eta_picker"),
                         }
                         for candidate in req.get("picker_candidates", [])
