@@ -1,4 +1,3 @@
-
 """Episode runner for TA-RWARE coordination experiments."""
 from __future__ import annotations
 
@@ -54,14 +53,7 @@ class EpisodeRunner:
                 care_for_agents_in_cost=config.care_for_agents_in_cost,
             )
         )
-    """
-    def make_env(self) -> gym.Env:
-        
-        try:
-            return gym.make(self.config.env_id)
-        except Exception as exc:
-            raise RuntimeError(f"Failed to create environment '{self.config.env_id}': {exc}") from exc
-    """
+
     def make_env(self) -> gym.Env:
         try:
             if str(self.config.env_id).startswith("tarware-"):
@@ -69,8 +61,6 @@ class EpisodeRunner:
             return gym.make(self.config.env_id, max_steps=self.config.max_steps)
         except Exception as exc:
             raise RuntimeError(f"Failed to create environment '{self.config.env_id}': {exc}") from exc
-
-
 
     def run(self, planner: Any) -> dict[str, Any]:
         """Run the configured number of episodes and collect summaries."""
@@ -146,6 +136,11 @@ class EpisodeRunner:
         zero_option_unreachable = 0
         zero_option_no_idle_picker = 0
 
+        # New: assignment-level quality metrics accumulated from comm_final_plan.objective_scores
+        assigned_cooperative_tasks = 0
+        total_assigned_sync_cost = 0
+        total_assigned_eta_gap = 0
+
         while steps < self.config.max_steps:
             if self.config.render:
                 env.render(self.config.render_mode)
@@ -183,7 +178,9 @@ class EpisodeRunner:
             pickers_distance_travelled += int(info.get("pickers_distance_travelled", 0))
             agvs_idle_time += int(info.get("agvs_idle_time", 0))
             pickers_idle_time += int(info.get("pickers_idle_time", 0))
+
             comm_payload = self._extract_comm_payload(planner)
+
             recommend_count, decline_count, multi_option_recommend_count = self._count_response_decisions(
                 comm_payload["comm_response"]
             )
@@ -191,6 +188,7 @@ class EpisodeRunner:
             total_declines += decline_count
             total_multi_option_recommends += multi_option_recommend_count
             communication_steps += int(comm_payload["communication_used"])
+
             comm_diagnostics = self._compute_comm_diagnostics(
                 state=state,
                 comm_request=comm_payload["comm_request"],
@@ -202,6 +200,13 @@ class EpisodeRunner:
             stage2_zero_option_requests += int(comm_diagnostics["stage2_zero_option_requests"])
             zero_option_unreachable += int(comm_diagnostics["zero_option_unreachable"])
             zero_option_no_idle_picker += int(comm_diagnostics["zero_option_no_idle_picker"])
+
+            # New: accumulate assignment-level quality metrics from objective_scores
+            objective_scores = self._extract_objective_scores(comm_payload["comm_final_plan"])
+            if objective_scores is not None:
+                assigned_cooperative_tasks += self._safe_nonnegative_int(objective_scores.get("num_assignments", 0))
+                total_assigned_sync_cost += self._safe_nonnegative_int(objective_scores.get("sum_sync_cost", 0))
+                total_assigned_eta_gap += self._safe_nonnegative_int(objective_scores.get("sum_eta_gap", 0))
 
             if jsonl_handle is not None:
                 record = {
@@ -262,6 +267,17 @@ class EpisodeRunner:
             "stage2_zero_option_requests": stage2_zero_option_requests,
             "zero_option_unreachable": zero_option_unreachable,
             "zero_option_no_idle_picker": zero_option_no_idle_picker,
+            "assigned_cooperative_tasks": assigned_cooperative_tasks,
+            "avg_assigned_cooperative_completion_time": (
+                float(total_assigned_sync_cost) / float(assigned_cooperative_tasks)
+                if assigned_cooperative_tasks > 0
+                else 0.0
+            ),
+            "avg_assigned_coordination_mismatch": (
+                float(total_assigned_eta_gap) / float(assigned_cooperative_tasks)
+                if assigned_cooperative_tasks > 0
+                else 0.0
+            ),
         }
 
     def _sanitize_actions(
@@ -480,11 +496,27 @@ class EpisodeRunner:
                 return True
         return False
 
+    def _extract_objective_scores(self, comm_final_plan: Any) -> dict[str, Any] | None:
+        """Extract objective_scores from a communication final plan if present."""
+        if not isinstance(comm_final_plan, dict):
+            return None
+        scores = comm_final_plan.get("objective_scores")
+        if not isinstance(scores, dict):
+            return None
+        return scores
+
     def _safe_int(self, value: Any) -> int:
         try:
             return int(value)
         except (TypeError, ValueError):
             return -1
+
+    def _safe_nonnegative_int(self, value: Any) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return parsed if parsed >= 0 else 0
 
     def _maybe_to_dict(self, value: Any) -> Any:
         """Return a JSON-serializable dict when the object exposes to_dict()."""

@@ -120,6 +120,7 @@ class SymbioticCommLLMPlanner:
         self.step_counter: int = 0
         self.last_communication_step: int = -10**9
         self.last_idle_probe_step: int = -10**9
+        self.last_available_picker_count: int = 0
         self.active_assignments: Dict[int, Dict[str, Any]] = {}  # agv_id -> {picker_id,rack_id,purpose,start_step}
         self.N_ENROUTE: int = 8
         self._stagnation: Dict[int, Dict[str, Any]] = {}
@@ -520,6 +521,10 @@ class SymbioticCommLLMPlanner:
         enroute_stalled = self._update_stagnation_and_check(state, agents)
         coordination_alert = bool(state.get("coordination_alert", False))
 
+        def finish(result: bool) -> bool:
+            self.last_available_picker_count = int(available_picker_count)
+            return bool(result)
+
         # ----------------------------
         # Compute currently available pickers for NEW cooperation
         # Keep this consistent with Stage2 availability semantics:
@@ -536,6 +541,9 @@ class SymbioticCommLLMPlanner:
             if a.get("type") == "PICKER"
             and not bool(a.get("busy", False))
             and int(a["id"]) not in reserved_picker_ids
+        )
+        picker_became_available = (
+            int(self.last_available_picker_count) == 0 and int(available_picker_count) > 0
         )
 
         # ----------------------------
@@ -602,7 +610,13 @@ class SymbioticCommLLMPlanner:
 
         # Strong recovery triggers should bypass ordinary min-gap throttling.
         if coordination_alert or active_assignment_target_lost or active_assignment_timeout or enroute_stalled:
-            return True
+            return finish(True)
+
+        # One-shot fast trigger: when picker availability is restored from zero to
+        # positive, allow one immediate communication round if there is a real
+        # idle cooperation need.
+        if picker_became_available and idle_need:
+            return finish(True)
 
         # ----------------------------
         # Budgeted probing:
@@ -633,27 +647,27 @@ class SymbioticCommLLMPlanner:
                     )
                     if needs_new_task:
                         self.last_idle_probe_step = self.step_counter
-                        return True
+                        return finish(True)
 
-            return False
+            return finish(False)
 
         # ----------------------------
         # Ordinary idle-triggered communication with available picker(s)
         # Apply min-gap and budget throttling here.
         # ----------------------------
         if not idle_need:
-            return False
+            return finish(False)
 
         min_gap = self._scarcity_aware_min_gap(state, agents)
         recent_comm = (self.step_counter - self.last_communication_step) < min_gap
         if recent_comm:
-            return False
+            return finish(False)
 
         if self._is_budget_throttled():
             self.planner_throttled_by_budget = True
-            return False
+            return finish(False)
 
-        return True
+        return finish(True)
 
     def _scarcity_aware_min_gap(self, state: dict[str, Any], agents: list[dict[str, Any]]) -> int:
         """Increase re-communication gap under picker scarcity."""
@@ -671,9 +685,9 @@ class SymbioticCommLLMPlanner:
         mild_scarcity = (num_agvs > num_pickers) or (idle_pickers <= 1)
         severe_scarcity = (num_agvs > num_pickers) and (idle_pickers <= 1)
         if severe_scarcity:
-            return 30
-        if mild_scarcity:
             return 20
+        if mild_scarcity:
+            return 15
         return int(self.config.min_recommunication_gap_steps)
 
     def _is_budget_throttled(self) -> bool:
