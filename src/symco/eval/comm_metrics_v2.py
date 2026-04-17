@@ -69,7 +69,8 @@ def summarize_communication_v2(records: list[dict]) -> dict:
     total_revisions = 0
     total_assigned_requests_for_revision = 0
 
-    fallback_steps = 0
+    stage_failure_fallbacks = 0
+    no_executable_action_fallbacks = 0
 
     total_num_assignments_sum = 0
     total_sum_sync_cost = 0
@@ -100,7 +101,8 @@ def summarize_communication_v2(records: list[dict]) -> dict:
                 "assigned_requests": 0,
                 "supported_assignable_requests": 0,
                 "revisions": 0,
-                "fallback_steps": 0,
+                "stage_failure_fallbacks": 0,
+                "no_executable_action_fallbacks": 0,
                 "objective_score_steps": 0,
                 "num_assignments_sum": 0,
                 "sum_sync_cost": 0,
@@ -168,9 +170,12 @@ def summarize_communication_v2(records: list[dict]) -> dict:
         breakdown["revisions"] += revisions
 
         # Fallback detection
-        if _is_fallback_plan(comm_final_plan):
-            fallback_steps += 1
-            breakdown["fallback_steps"] += 1
+        if _is_stage_failure_fallback(comm_final_plan):
+            stage_failure_fallbacks += 1
+            breakdown["stage_failure_fallbacks"] += 1
+        if _is_no_executable_action_fallback(comm_final_plan):
+            no_executable_action_fallbacks += 1
+            breakdown["no_executable_action_fallbacks"] += 1
 
         # Objective scores
         objective_scores = _extract_objective_scores(comm_final_plan)
@@ -221,8 +226,13 @@ def summarize_communication_v2(records: list[dict]) -> dict:
         "assignment_rate": _safe_ratio(total_assigned_requests, total_supported_assignable_requests),
         "total_revisions": total_revisions,
         "revision_rate": _safe_ratio(total_revisions, total_assigned_requests_for_revision),
-        "fallback_steps": fallback_steps,
-        "fallback_rate": _safe_ratio(fallback_steps, communication_steps),
+        "stage_failure_fallbacks": stage_failure_fallbacks,
+        "stage_failure_fallback_rate": _safe_ratio(stage_failure_fallbacks, communication_steps),
+        "no_executable_action_fallbacks": no_executable_action_fallbacks,
+        "no_executable_action_fallback_rate": _safe_ratio(
+            no_executable_action_fallbacks,
+            communication_steps,
+        ),
         "avg_num_assignments_per_comm_step": _safe_ratio(total_num_assignments_sum, objective_score_steps),
         "avg_sum_sync_cost_per_comm_step": _safe_ratio(total_sum_sync_cost, objective_score_steps),
         "avg_sum_eta_gap_per_comm_step": _safe_ratio(total_sum_eta_gap, objective_score_steps),
@@ -266,8 +276,16 @@ def print_summary(summary: dict) -> None:
     print(f"total_revisions: {summary.get('total_revisions', 0)}")
     print(f"revision_rate: {float(summary.get('revision_rate', 0.0)):.3f}")
 
-    print(f"fallback_steps: {summary.get('fallback_steps', 0)}")
-    print(f"fallback_rate: {float(summary.get('fallback_rate', 0.0)):.3f}")
+    print(f"stage_failure_fallbacks: {summary.get('stage_failure_fallbacks', 0)}")
+    print(
+        f"stage_failure_fallback_rate: "
+        f"{float(summary.get('stage_failure_fallback_rate', 0.0)):.3f}"
+    )
+    print(f"no_executable_action_fallbacks: {summary.get('no_executable_action_fallbacks', 0)}")
+    print(
+        f"no_executable_action_fallback_rate: "
+        f"{float(summary.get('no_executable_action_fallback_rate', 0.0)):.3f}"
+    )
 
     print(
         f"avg_num_assignments_per_comm_step: "
@@ -304,7 +322,8 @@ def print_summary(summary: dict) -> None:
                 f"reject_options={item.get('reject_options', 0)} "
                 f"assigned={item.get('assigned_requests', 0)} "
                 f"revisions={item.get('revisions', 0)} "
-                f"fallbacks={item.get('fallback_steps', 0)}"
+                f"stage_failure_fallbacks={item.get('stage_failure_fallbacks', 0)} "
+                f"no_executable_action_fallbacks={item.get('no_executable_action_fallbacks', 0)}"
             )
 
 
@@ -356,11 +375,36 @@ def _extract_objective_scores(comm_final_plan: dict) -> dict | None:
     return scores
 
 
-def _is_fallback_plan(comm_final_plan: dict) -> bool:
+def _fallback_explanation_text(comm_final_plan: dict) -> str:
     explanation = comm_final_plan.get("explanation", "")
     if explanation is None:
+        return ""
+    return str(explanation).upper()
+
+
+def _is_stage_failure_fallback(comm_final_plan: dict) -> bool:
+    explanation_text = _fallback_explanation_text(comm_final_plan)
+    if not explanation_text:
         return False
-    return str(explanation).startswith("FALLBACK_TO_RULE_SYMBIOTIC")
+    stage_failure_markers = (
+        "STAGE1 LLM EXCEPTION",
+        "STAGE2 LLM EXCEPTION",
+        "STAGE3 LLM EXCEPTION",
+        "STAGE1 PRODUCED NO VALID",
+        "STAGE3 INVALID OUTPUT",
+    )
+    return any(marker in explanation_text for marker in stage_failure_markers)
+
+
+def _is_no_executable_action_fallback(comm_final_plan: dict) -> bool:
+    explanation_text = _fallback_explanation_text(comm_final_plan)
+    if not explanation_text:
+        return False
+    no_action_markers = (
+        "COMMUNICATION PRODUCED NO EXECUTABLE ACTIONS",
+        "NO EXECUTABLE ACTIONS AFTER COMMUNICATION ROUND",
+    )
+    return any(marker in explanation_text for marker in no_action_markers)
 
 
 def _count_stage2_response_metrics(

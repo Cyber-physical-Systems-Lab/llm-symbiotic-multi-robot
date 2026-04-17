@@ -298,8 +298,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 state,
                 reason="Communication produced no executable actions.",
             )
-            if self._has_nonzero_actions(fallback_actions):
-                self._mark_communication_effective()
+            self._mark_communication_effective()
             self._debug_print_delivery_flow(
                 state=state,
                 batch_requests=batch_requests,
@@ -957,6 +956,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             print("WHOLE_PLAN_FALLBACK_NON_MUTUALISTIC_PARTNER_AWARE:", reason)
 
         self.active_assignments.clear()
+        self.last_communication_step = self.step_counter
 
         batch_requests = self._build_batch_requests(state)
         if not batch_requests:
