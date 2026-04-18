@@ -127,6 +127,14 @@ class SymbioticCommLLMPlanner:
         self.budget_window_steps: int = 20
         self.budget_max_comm_steps: int = 3
         self._communication_history: List[int] = []
+        self._previous_stalled_agv_ids: Set[int] = set()
+        self._previous_timeout_agv_ids: Set[int] = set()
+        self._previous_target_lost_agv_ids: Set[int] = set()
+        self._last_stalled_trigger_step_by_agv: Dict[int, int] = {}
+        self._last_timeout_trigger_step_by_agv: Dict[int, int] = {}
+        self._last_target_lost_trigger_step_by_agv: Dict[int, int] = {}
+        self._previous_coordination_alert: bool = False
+        self._last_coordination_alert_trigger_step: int = -10**9
 
         # Region mapping for load balancing
         self.rack_to_region = None   # 将在 plan 中从 state 读取
@@ -518,11 +526,18 @@ class SymbioticCommLLMPlanner:
         agents = self._sorted_agents(state)
         request_racks = state.get("requests_rack_ids_topk", [])
         empty_racks = state.get("empty_rack_ids_topk", [])
-        enroute_stalled = self._update_stagnation_and_check(state, agents)
         coordination_alert = bool(state.get("coordination_alert", False))
+        current_stalled_agv_ids: set[int] = set()
+        current_timeout_agv_ids: set[int] = set()
+        current_target_lost_agv_ids: set[int] = set()
+        current_coordination_alert = bool(coordination_alert)
 
         def finish(result: bool) -> bool:
             self.last_available_picker_count = int(available_picker_count)
+            self._previous_stalled_agv_ids = set(current_stalled_agv_ids)
+            self._previous_timeout_agv_ids = set(current_timeout_agv_ids)
+            self._previous_target_lost_agv_ids = set(current_target_lost_agv_ids)
+            self._previous_coordination_alert = bool(current_coordination_alert)
             return bool(result)
 
         # ----------------------------
@@ -581,9 +596,8 @@ class SymbioticCommLLMPlanner:
         # Recovery triggers
         # These should remain available even under picker scarcity.
         # ----------------------------
+        current_stalled_agv_ids = self._update_stagnation_and_check(state, agents)
         agents_by_id = {int(a["id"]): a for a in agents if isinstance(a, dict) and "id" in a}
-        active_assignment_target_lost = False
-        active_assignment_timeout = False
 
         for agv_id, assignment in self.active_assignments.items():
             agv_state = agents_by_id.get(int(agv_id))
@@ -597,19 +611,78 @@ class SymbioticCommLLMPlanner:
             expected_rack = int(assignment.get("rack_id", 0))
             busy = bool(agv_state.get("busy", False))
 
+            if elapsed >= self.config.wait_timeout_steps:
+                current_timeout_agv_ids.add(int(agv_id))
+
             # still executing the same target -> no recovery trigger yet
             if busy and current_target == expected_rack:
                 continue
 
             if current_target == 0:
-                active_assignment_target_lost = True
-                break
+                current_target_lost_agv_ids.add(int(agv_id))
 
-            if elapsed >= self.config.wait_timeout_steps:
-                active_assignment_timeout = True
+        recovery_debug_parts: list[str] = []
 
-        # Strong recovery triggers should bypass ordinary min-gap throttling.
-        if coordination_alert or active_assignment_target_lost or active_assignment_timeout or enroute_stalled:
+        target_lost_new_ids, target_lost_retry_ids = self._select_recovery_agv_triggers(
+            current_agv_ids=current_target_lost_agv_ids,
+            previous_agv_ids=self._previous_target_lost_agv_ids,
+            last_trigger_step_by_agv=self._last_target_lost_trigger_step_by_agv,
+            cooldown_steps=10,
+        )
+        if target_lost_new_ids or target_lost_retry_ids:
+            recovery_debug_parts.append(
+                f"target_lost:new={target_lost_new_ids},retry={target_lost_retry_ids}"
+            )
+
+        timeout_new_ids, timeout_retry_ids = self._select_recovery_agv_triggers(
+            current_agv_ids=current_timeout_agv_ids,
+            previous_agv_ids=self._previous_timeout_agv_ids,
+            last_trigger_step_by_agv=self._last_timeout_trigger_step_by_agv,
+            cooldown_steps=20,
+        )
+        if timeout_new_ids or timeout_retry_ids:
+            recovery_debug_parts.append(
+                f"timeout:new={timeout_new_ids},retry={timeout_retry_ids}"
+            )
+
+        stalled_new_ids, stalled_retry_ids = self._select_recovery_agv_triggers(
+            current_agv_ids=current_stalled_agv_ids,
+            previous_agv_ids=self._previous_stalled_agv_ids,
+            last_trigger_step_by_agv=self._last_stalled_trigger_step_by_agv,
+            cooldown_steps=15,
+        )
+        if stalled_new_ids or stalled_retry_ids:
+            recovery_debug_parts.append(
+                f"stalled:new={stalled_new_ids},retry={stalled_retry_ids}"
+            )
+
+        coordination_alert_new = False
+        coordination_alert_retry = False
+        if coordination_alert:
+            if not self._previous_coordination_alert:
+                coordination_alert_new = True
+            elif (self.step_counter - int(self._last_coordination_alert_trigger_step)) >= 15:
+                coordination_alert_retry = True
+            if coordination_alert_new or coordination_alert_retry:
+                self._last_coordination_alert_trigger_step = int(self.step_counter)
+                recovery_debug_parts.append(
+                    f"coordination_alert:{'new' if coordination_alert_new else 'retry'}"
+                )
+
+        # Strong recovery triggers should bypass ordinary min-gap throttling,
+        # but are now gated as event triggers with low-frequency retries.
+        if recovery_debug_parts:
+            if self.config.debug:
+                print(
+                    "RECOVERY_TRIGGER "
+                    + json.dumps(
+                        {
+                            "step": int(self.step_counter),
+                            "accepted": recovery_debug_parts,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
             return finish(True)
 
         # One-shot fast trigger: when picker availability is restored from zero to
@@ -705,14 +778,40 @@ class SymbioticCommLLMPlanner:
             int(step_idx) for step_idx in self._communication_history if int(step_idx) >= window_start
         ]
 
+    def _select_recovery_agv_triggers(
+        self,
+        current_agv_ids: Set[int],
+        previous_agv_ids: Set[int],
+        last_trigger_step_by_agv: Dict[int, int],
+        cooldown_steps: int,
+    ) -> tuple[list[int], list[int]]:
+        current_ids = {int(agv_id) for agv_id in current_agv_ids}
+        previous_ids = {int(agv_id) for agv_id in previous_agv_ids}
+
+        for agv_id in list(last_trigger_step_by_agv.keys()):
+            if int(agv_id) not in current_ids:
+                last_trigger_step_by_agv.pop(int(agv_id), None)
+
+        new_ids = sorted(current_ids - previous_ids)
+        retry_ids = sorted(
+            agv_id
+            for agv_id in (current_ids & previous_ids)
+            if (self.step_counter - int(last_trigger_step_by_agv.get(int(agv_id), -10**9))) >= int(cooldown_steps)
+        )
+
+        for agv_id in new_ids + retry_ids:
+            last_trigger_step_by_agv[int(agv_id)] = int(self.step_counter)
+
+        return new_ids, retry_ids
+
     def _update_stagnation_and_check(
         self,
         state: dict[str, Any],
         agents: list[dict[str, Any]],
-    ) -> bool:
-        """Track AGV en-route stagnation for communication triggering."""
+    ) -> set[int]:
+        """Track AGV en-route stagnation and return the currently stalled AGV ids."""
         seen_agent_ids: set[int] = set()
-        enroute_stalled = False
+        stalled_agv_ids: set[int] = set()
 
         for agent in agents:
             if not isinstance(agent, dict) or "id" not in agent:
@@ -757,13 +856,13 @@ class SymbioticCommLLMPlanner:
             if not enroute:
                 tracker["no_move"] = 0
             elif int(tracker.get("no_move", 0)) >= self.N_ENROUTE:
-                enroute_stalled = True
+                stalled_agv_ids.add(int(agent_id))
 
         stale_agent_ids = set(self._stagnation.keys()) - seen_agent_ids
         for agent_id in stale_agent_ids:
             self._stagnation.pop(agent_id, None)
 
-        return enroute_stalled
+        return stalled_agv_ids
 
     def _coords_tuple(self, coords: Any) -> Optional[Tuple[int, int]]:
         if not isinstance(coords, (list, tuple)) or len(coords) != 2:

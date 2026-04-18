@@ -58,6 +58,9 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
         total_busies = 0
         total_picker_candidates = 0
         total_zero_candidate_requests = 0
+        assigned_cooperative_tasks = 0
+        total_assigned_sync_cost = 0
+        total_assigned_eta_gap = 0
 
         episode_records: list[dict[str, Any]] = []
 
@@ -110,6 +113,18 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             total_picker_candidates += picker_candidate_total
             total_zero_candidate_requests += zero_candidate_requests
 
+            objective_scores = self._extract_objective_scores(comm_payload["comm_final_plan"])
+            if objective_scores is not None:
+                assigned_cooperative_tasks += self._safe_nonnegative_int(
+                    objective_scores.get("num_assignments", 0)
+                )
+                total_assigned_sync_cost += self._safe_nonnegative_int(
+                    objective_scores.get("sum_sync_cost", 0)
+                )
+                total_assigned_eta_gap += self._safe_nonnegative_int(
+                    objective_scores.get("sum_eta_gap", 0)
+                )
+
             record = {
                 "episode_idx": episode_idx,
                 "step_idx": steps,
@@ -150,11 +165,6 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
 
         total_cooperative_waiting_time = self._compute_cooperative_waiting_time(episode_records)
         cooperative_attempts = self._count_cooperative_attempts(episode_records)
-        (
-            assigned_cooperative_tasks,
-            total_assigned_sync_cost,
-            total_assigned_eta_gap,
-        ) = self._compute_assigned_assignment_quality_metrics(episode_records)
 
         return {
             "episode_idx": episode_idx,
@@ -316,96 +326,6 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                     active_targets_by_agv.pop(agv_id, None)
 
         return attempts
-
-    def _compute_assigned_assignment_quality_metrics(
-        self,
-        records: list[dict[str, Any]],
-    ) -> tuple[int, float, float]:
-        """
-        Compute assignment-quality metrics for one episode.
-
-        Returns:
-        - assigned_task_count
-        - sum_assigned_sync_cost
-        - sum_assigned_eta_gap
-
-        Each final assignment is matched back to comm_response.responses[].options
-        using:
-        - request_id
-        - rack_id
-        - picker_id
-        """
-        assigned_task_count = 0
-        sum_assigned_sync_cost = 0.0
-        sum_assigned_eta_gap = 0.0
-
-        for record in records:
-            comm_final_plan = record.get("comm_final_plan")
-            if not isinstance(comm_final_plan, dict):
-                continue
-
-            assignments = comm_final_plan.get("assignments", [])
-            if not isinstance(assignments, list) or not assignments:
-                continue
-
-            comm_response = record.get("comm_response")
-            if not isinstance(comm_response, dict):
-                continue
-
-            responses = comm_response.get("responses", [])
-            if not isinstance(responses, list):
-                continue
-
-            option_index: dict[tuple[str, int, int], dict[str, Any]] = {}
-            for response in responses:
-                if not isinstance(response, dict):
-                    continue
-                request_id = response.get("request_id")
-                if not isinstance(request_id, str):
-                    continue
-
-                options = response.get("options", [])
-                if not isinstance(options, list):
-                    continue
-
-                    # unreachable, but safe to leave
-
-                for option in options:
-                    if not isinstance(option, dict):
-                        continue
-                    rack_id = self._safe_int(option.get("rack_id", 0))
-                    picker_id = self._safe_int(option.get("picker_id", 0))
-                    if rack_id <= 0 or picker_id <= 0:
-                        continue
-                    option_index[(request_id, rack_id, picker_id)] = option
-
-            for assignment in assignments:
-                if not isinstance(assignment, dict):
-                    continue
-
-                request_id = assignment.get("request_id")
-                if not isinstance(request_id, str):
-                    continue
-
-                rack_id = self._safe_int(assignment.get("rack_id", 0))
-                picker_id = self._safe_int(assignment.get("picker_id", 0))
-                if rack_id <= 0 or picker_id <= 0:
-                    continue
-
-                option = option_index.get((request_id, rack_id, picker_id))
-                if not isinstance(option, dict):
-                    continue
-
-                sync_cost = option.get("sync_cost")
-                eta_gap = option.get("eta_gap")
-                if not self._is_number_like(sync_cost) or not self._is_number_like(eta_gap):
-                    continue
-
-                assigned_task_count += 1
-                sum_assigned_sync_cost += float(sync_cost)
-                sum_assigned_eta_gap += float(eta_gap)
-
-        return assigned_task_count, sum_assigned_sync_cost, sum_assigned_eta_gap
 
     @staticmethod
     def _safe_int(value: Any) -> int:

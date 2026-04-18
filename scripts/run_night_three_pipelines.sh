@@ -11,11 +11,11 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=3
+EPISODES=4
 SEED=1
 MAX_STEPS=1500
 
-OUT_DIR="outputs/night_run_20260415"
+OUT_DIR="outputs/night_run_20260418"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
@@ -75,32 +75,6 @@ run_symbiotic() {
     --unique_rack "${UNIQUE_RACK}"
 }
 
-run_non_mutualistic_v1() {
-  local env_id="$1"
-  echo
-  echo ">>> Running NON-MUTUALISTIC V1 on ${env_id}"
-  python scripts/run_non_mutualistic_comm_llm.py \
-    --env_id "${env_id}" \
-    --episodes "${EPISODES}" \
-    --seed "${SEED}" \
-    --max_steps "${MAX_STEPS}" \
-    --out_dir "${OUT_DIR}" \
-    --topk_requests "${TOPK_REQUESTS}" \
-    --topk_empty "${TOPK_EMPTY}" \
-    --topk_goals "${TOPK_GOALS}" \
-    --pickers_to_agvs "${PICKERS_TO_AGVS}" \
-    --block_conflicting_actions "${BLOCK_CONFLICTING_ACTIONS}" \
-    --care_for_agents_in_cost "${CARE_FOR_AGENTS_IN_COST}" \
-    --stage1_pool_k "${STAGE1_POOL_K}" \
-    --stage2_picker_options_per_rack "${STAGE2_PICKER_OPTIONS_PER_RACK}" \
-    --max_requests_per_batch "${MAX_REQUESTS_PER_BATCH}" \
-    --wait_timeout_steps "${WAIT_TIMEOUT_STEPS}" \
-    --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
-    --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
-    --unique_picker "${UNIQUE_PICKER}" \
-    --unique_rack "${UNIQUE_RACK}"
-}
-
 run_non_mutualistic_v2() {
   local env_id="$1"
   echo
@@ -134,7 +108,6 @@ for env_id in "${ENV_IDS[@]}"; do
   echo "########################################"
 
   run_symbiotic "${env_id}"
-  run_non_mutualistic_v1 "${env_id}"
   run_non_mutualistic_v2 "${env_id}"
 done
 
