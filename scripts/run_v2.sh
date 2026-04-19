@@ -11,11 +11,11 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=3
-SEED=0
+EPISODES=4
+SEED=1
 MAX_STEPS=1500
 
-OUT_DIR="outputs/run_v2_20250419"
+OUT_DIR="outputs/run_v2_20260419"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
@@ -24,35 +24,33 @@ PICKERS_TO_AGVS=1
 BLOCK_CONFLICTING_ACTIONS=1
 CARE_FOR_AGENTS_IN_COST=0
 
-# Planner config
 STAGE1_POOL_K=8
 STAGE2_PICKER_OPTIONS_PER_RACK=3
-MAX_REQUESTS_PER_BATCH=2
-
 WAIT_TIMEOUT_STEPS=40
 MIN_RECOMMUNICATION_GAP_STEPS=8
-IDLE_PROBE_GAP_STEPS=25
-
 UNIQUE_PICKER=1
 UNIQUE_RACK=1
 
-DEBUG=0
+# Non-mutualistic-only
+MAX_REQUESTS_PER_BATCH=2
+IDLE_PROBE_GAP_STEPS=25
 
 mkdir -p "${OUT_DIR}"
 
 echo "========================================"
-echo "Running NonMutualisticCommLLMPlannerV2"
-echo "OUT_DIR=${OUT_DIR}"
-echo "EPISODES=${EPISODES}, SEED=${SEED}, MAX_STEPS=${MAX_STEPS}"
-echo "ENV_IDS=${ENV_IDS[*]}"
+echo "Running NonMutualisticCommLLMPlannerV2 only"
+echo "Output directory: ${OUT_DIR}"
+echo "Episodes: ${EPISODES}"
+echo "Seed: ${SEED}"
+echo "Max steps: ${MAX_STEPS}"
 echo "========================================"
 
-for ENV_ID in "${ENV_IDS[@]}"; do
+run_non_mutualistic_v2() {
+  local env_id="$1"
   echo
-  echo ">>> Running ${ENV_ID}"
-
+  echo ">>> Running NON-MUTUALISTIC V2 on ${env_id}"
   python scripts/run_non_mutualistic_comm_llm_v2.py \
-    --env_id "${ENV_ID}" \
+    --env_id "${env_id}" \
     --episodes "${EPISODES}" \
     --seed "${SEED}" \
     --max_steps "${MAX_STEPS}" \
@@ -70,12 +68,20 @@ for ENV_ID in "${ENV_IDS[@]}"; do
     --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
     --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
     --unique_picker "${UNIQUE_PICKER}" \
-    --unique_rack "${UNIQUE_RACK}" \
-    --debug "${DEBUG}"
+    --unique_rack "${UNIQUE_RACK}"
+}
 
-  echo "<<< Finished ${ENV_ID}"
+for env_id in "${ENV_IDS[@]}"; do
+  echo
+  echo "########################################"
+  echo "Environment: ${env_id}"
+  echo "########################################"
+
+  run_non_mutualistic_v2 "${env_id}"
 done
 
 echo
-echo "All runs finished."
-echo "Outputs saved to: ${OUT_DIR}"
+echo "========================================"
+echo "Run finished"
+echo "Results are in: ${OUT_DIR}"
+echo "========================================"
