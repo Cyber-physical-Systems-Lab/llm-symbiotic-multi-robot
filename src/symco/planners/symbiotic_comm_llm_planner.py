@@ -935,48 +935,40 @@ class SymbioticCommLLMPlanner:
     def _count_nearby_idle_pickers(
         self,
         state: dict[str, Any],
-        rack_coords: tuple[int, int],
-        radius: int = 15,
+        rack_id: int,
+        eta_threshold: int = 15,
     ) -> int:
-        """Count idle pickers within a Manhattan radius of the rack coordinates.
+        """Count idle pickers whose path-based eta to the rack is within threshold.
 
-        `rack_coords` must be in `(x, y)` order. If coordinates are unavailable
-        or malformed, return 0 conservatively.
+        This uses picker cost_table entries, which are derived from env.find_path(...)
+        in StateBuilder, so it reflects path-based reachability rather than
+        Manhattan-distance proximity.
         """
-        try:
-            rack_x, rack_y = int(rack_coords[0]), int(rack_coords[1])
-        except (TypeError, ValueError, IndexError):
+        rack_id = self._safe_int(rack_id)
+        if rack_id <= 0:
             return 0
 
         count = 0
         for agent in state.get("agents", []):
             if not isinstance(agent, dict):
                 continue
-            if agent.get("type") != "PICKER" or bool(agent.get("busy", False)):
+            if agent.get("type") != "PICKER":
+                continue
+            if bool(agent.get("busy", False)):
                 continue
 
-            picker_x: Optional[int] = None
-            picker_y: Optional[int] = None
-            coords_yx = agent.get("coords_yx")
-            if isinstance(coords_yx, (list, tuple)) and len(coords_yx) == 2:
-                try:
-                    picker_y = int(coords_yx[0])
-                    picker_x = int(coords_yx[1])
-                except (TypeError, ValueError):
-                    picker_x = None
-                    picker_y = None
-            elif "x" in agent and "y" in agent:
-                try:
-                    picker_x = int(agent["x"])
-                    picker_y = int(agent["y"])
-                except (TypeError, ValueError):
-                    picker_x = None
-                    picker_y = None
-
-            if picker_x is None or picker_y is None:
+            picker_id = self._safe_int(agent.get("id"))
+            if picker_id <= 0:
                 continue
 
-            if abs(picker_x - rack_x) + abs(picker_y - rack_y) <= int(radius):
+            eta_picker = self._safe_cost(
+                self._agent_cost_map(state, "picker", picker_id),
+                rack_id,
+            )
+            if eta_picker is None:
+                continue
+
+            if int(eta_picker) <= int(eta_threshold):
                 count += 1
 
         return count
@@ -1297,8 +1289,7 @@ class SymbioticCommLLMPlanner:
 
         # 计算区域负载
         region_load = self._compute_region_load()
-        location_coords_xy = state.get("location_coords_xy", {})
-
+        
 
         valid_masks = state.get("valid_action_masks", [])
         agv_index_by_id: dict[int, int] = {}
@@ -1327,16 +1318,11 @@ class SymbioticCommLLMPlanner:
 
             candidates = []
             for rid, eta in scored:
-                coords_xy = location_coords_xy.get(str(int(rid)))
-                nearby_idle_pickers = 0
-                if isinstance(coords_xy, (list, tuple)) and len(coords_xy) == 2:
-                    try:
-                        nearby_idle_pickers = self._count_nearby_idle_pickers(
-                            state,
-                            (int(coords_xy[0]), int(coords_xy[1])),
-                        )
-                    except (TypeError, ValueError):
-                        nearby_idle_pickers = 0
+                nearby_idle_pickers = self._count_nearby_idle_pickers(
+                    state,
+                    int(rid),
+                    eta_threshold=15,
+                )
 
                 candidates.append(
                     {

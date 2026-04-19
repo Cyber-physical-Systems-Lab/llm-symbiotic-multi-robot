@@ -363,7 +363,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
         region_load = self._compute_region_load()
         valid_masks = state.get("valid_action_masks", [])
-        location_coords_xy = state.get("location_coords_xy", {})
+        
 
         agv_index_by_id: dict[int, int] = {}
         for idx, agent in enumerate(agents):
@@ -388,16 +388,11 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 if eta_agv is None:
                     continue
 
-                coords_xy = location_coords_xy.get(str(int(rack_id)))
-                nearby_idle_pickers = 0
-                if isinstance(coords_xy, (list, tuple)) and len(coords_xy) == 2:
-                    try:
-                        nearby_idle_pickers = self._count_nearby_idle_pickers(
-                            state,
-                            (int(coords_xy[0]), int(coords_xy[1])),
-                        )
-                    except (TypeError, ValueError):
-                        nearby_idle_pickers = 0
+                nearby_idle_pickers = self._count_nearby_idle_pickers(
+                    state,
+                    int(rack_id),
+                    eta_threshold=15,
+                )
 
                 candidates.append(
                     {

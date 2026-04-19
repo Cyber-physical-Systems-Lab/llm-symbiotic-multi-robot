@@ -407,7 +407,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env_id", type=str, required=True, help="Gymnasium environment id.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=0, help="Base random seed.")
-    parser.add_argument("--max_steps", type=int, default=500, help="Maximum steps per episode.")
+    parser.add_argument("--max_steps", type=int, default=1500, help="Maximum steps per episode.")
     parser.add_argument("--out_dir", type=str, default="outputs", help="Directory for run artifacts.")
     parser.add_argument("--render", action="store_true", help="Render the environment during execution.")
     parser.add_argument("--render_mode", type=str, default="human", help="Render mode passed to env.render.")
