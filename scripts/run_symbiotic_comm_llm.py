@@ -215,10 +215,26 @@ def main() -> int:
     episode_summaries = result.get("episode_summaries", [])
 
     print(f"summary_json: {summary_path if summary_path is not None else 'not found'}")
-    print(f"mean_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
+    print(f"mean_total_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
     print(f"mean_clashes: {mean_metric(episode_summaries, 'total_clashes'):.3f}")
     print(f"mean_stucks: {mean_metric(episode_summaries, 'total_stucks'):.3f}")
     print(f"mean_comm_steps: {mean_metric(episode_summaries, 'communication_steps'):.3f}")
+    print(
+        "mean_avg_execution_time_per_assignment: "
+        f"{mean_metric(episode_summaries, 'avg_execution_time_per_assignment'):.3f}"
+    )
+    print(
+        "mean_avg_wait_time_all_assignments: "
+        f"{mean_metric(episode_summaries, 'avg_wait_time_all_assignments'):.3f}"
+    )
+    print(
+        "mean_avg_wait_time_after_first_arrival: "
+        f"{mean_metric(episode_summaries, 'avg_wait_time_after_first_arrival'):.3f}"
+    )
+    print(
+        "mean_assignment_success_rate: "
+        f"{mean_metric(episode_summaries, 'assignment_success_rate'):.3f}"
+    )
     return 0
 
 

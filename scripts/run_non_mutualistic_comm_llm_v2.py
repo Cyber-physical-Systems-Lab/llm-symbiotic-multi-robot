@@ -138,6 +138,7 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                     "requests_rack_ids_topk": state["requests_rack_ids_topk"],
                     "empty_rack_ids_topk": state["empty_rack_ids_topk"],
                     "goal_ids": state["goal_ids"],
+                    "location_coords_xy": state.get("location_coords_xy", {}),
                 },
                 "comm_request": comm_payload["comm_request"],
                 "comm_response": comm_payload["comm_response"],
@@ -165,6 +166,15 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
 
         total_cooperative_waiting_time = self._compute_cooperative_waiting_time(episode_records)
         cooperative_attempts = self._count_cooperative_attempts(episode_records)
+        (
+            completed_assigned_task_count,
+            total_assigned_task_completion_time,
+        ) = self._compute_assigned_task_completion_metrics(episode_records)
+        (
+            completed_assigned_task_count_for_wait,
+            total_assigned_target_wait_time_all,
+            total_assigned_target_wait_time_completed,
+        ) = self._compute_assigned_task_wait_metrics(episode_records)
         trigger_reason_counts = getattr(planner, "trigger_reason_counts", {})
         if not isinstance(trigger_reason_counts, dict):
             trigger_reason_counts = {}
@@ -217,11 +227,23 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 total_cooperative_waiting_time, cooperative_attempts
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
-            "avg_assigned_cooperative_completion_time": self._safe_ratio(
+            "avg_planned_sync_cost": self._safe_ratio(
                 total_assigned_sync_cost, assigned_cooperative_tasks
             ),
-            "avg_assigned_coordination_mismatch": self._safe_ratio(
+            "avg_agv_picker_arrival_gap": self._safe_ratio(
                 total_assigned_eta_gap, assigned_cooperative_tasks
+            ),
+            "avg_execution_time_per_assignment": self._safe_ratio(
+                total_assigned_task_completion_time, completed_assigned_task_count
+            ),
+            "avg_wait_time_all_assignments": self._safe_ratio(
+                total_assigned_target_wait_time_all, assigned_cooperative_tasks
+            ),
+            "avg_wait_time_after_first_arrival": self._safe_ratio(
+                total_assigned_target_wait_time_completed, completed_assigned_task_count_for_wait
+            ),
+            "assignment_success_rate": self._safe_ratio(
+                completed_assigned_task_count_for_wait, assigned_cooperative_tasks
             ),
             "planner_schema": "non_mutualistic_partner_aware_comm_llm_v2",
             "stage2_semantics": "ack_busy_committed_target",
@@ -407,7 +429,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env_id", type=str, required=True, help="Gymnasium environment id.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=0, help="Base random seed.")
-    parser.add_argument("--max_steps", type=int, default=1500, help="Maximum steps per episode.")
+    parser.add_argument("--max_steps", type=int, default=500, help="Maximum steps per episode.")
     parser.add_argument("--out_dir", type=str, default="outputs", help="Directory for run artifacts.")
     parser.add_argument("--render", action="store_true", help="Render the environment during execution.")
     parser.add_argument("--render_mode", type=str, default="human", help="Render mode passed to env.render.")
@@ -552,7 +574,7 @@ def main() -> int:
     episode_summaries = result.get("episode_summaries", [])
 
     print(f"summary_json: {summary_path if summary_path is not None else 'not found'}")
-    print(f"mean_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
+    print(f"mean_total_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
     print(f"mean_clashes: {mean_metric(episode_summaries, 'total_clashes'):.3f}")
     print(f"mean_stucks: {mean_metric(episode_summaries, 'total_stucks'):.3f}")
     print(f"mean_comm_steps: {mean_metric(episode_summaries, 'communication_steps'):.3f}")
@@ -561,12 +583,28 @@ def main() -> int:
         f"{mean_metric(episode_summaries, 'avg_cooperative_waiting_time'):.3f}"
     )
     print(
-        "mean_avg_assigned_cooperative_completion_time: "
-        f"{mean_metric(episode_summaries, 'avg_assigned_cooperative_completion_time'):.3f}"
+        "mean_avg_planned_sync_cost: "
+        f"{mean_metric(episode_summaries, 'avg_planned_sync_cost'):.3f}"
     )
     print(
-        "mean_avg_assigned_coordination_mismatch: "
-        f"{mean_metric(episode_summaries, 'avg_assigned_coordination_mismatch'):.3f}"
+        "mean_avg_agv_picker_arrival_gap: "
+        f"{mean_metric(episode_summaries, 'avg_agv_picker_arrival_gap'):.3f}"
+    )
+    print(
+        "mean_avg_execution_time_per_assignment: "
+        f"{mean_metric(episode_summaries, 'avg_execution_time_per_assignment'):.3f}"
+    )
+    print(
+        "mean_avg_wait_time_all_assignments: "
+        f"{mean_metric(episode_summaries, 'avg_wait_time_all_assignments'):.3f}"
+    )
+    print(
+        "mean_avg_wait_time_after_first_arrival: "
+        f"{mean_metric(episode_summaries, 'avg_wait_time_after_first_arrival'):.3f}"
+    )
+    print(
+        "mean_assignment_success_rate: "
+        f"{mean_metric(episode_summaries, 'assignment_success_rate'):.3f}"
     )
     return 0
 

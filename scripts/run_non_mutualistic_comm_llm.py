@@ -194,10 +194,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 total_cooperative_waiting_time, cooperative_attempts
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
-            "avg_assigned_cooperative_completion_time": self._safe_ratio(
+            "avg_planned_sync_cost": self._safe_ratio(
                 total_assigned_sync_cost, assigned_cooperative_tasks
             ),
-            "avg_assigned_coordination_mismatch": self._safe_ratio(
+            "avg_agv_picker_arrival_gap": self._safe_ratio(
                 total_assigned_eta_gap, assigned_cooperative_tasks
             ),
             "planner_schema": "non_mutualistic_comm_llm_v1",
@@ -609,7 +609,7 @@ def main() -> int:
     episode_summaries = result.get("episode_summaries", [])
 
     print(f"summary_json: {summary_path if summary_path is not None else 'not found'}")
-    print(f"mean_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
+    print(f"mean_total_deliveries: {mean_metric(episode_summaries, 'total_deliveries'):.3f}")
     print(f"mean_clashes: {mean_metric(episode_summaries, 'total_clashes'):.3f}")
     print(f"mean_stucks: {mean_metric(episode_summaries, 'total_stucks'):.3f}")
     print(f"mean_comm_steps: {mean_metric(episode_summaries, 'communication_steps'):.3f}")
@@ -618,12 +618,12 @@ def main() -> int:
         f"{mean_metric(episode_summaries, 'avg_cooperative_waiting_time'):.3f}"
     )
     print(
-        "mean_avg_assigned_cooperative_completion_time: "
-        f"{mean_metric(episode_summaries, 'avg_assigned_cooperative_completion_time'):.3f}"
+        "mean_avg_planned_sync_cost: "
+        f"{mean_metric(episode_summaries, 'avg_planned_sync_cost'):.3f}"
     )
     print(
-        "mean_avg_assigned_coordination_mismatch: "
-        f"{mean_metric(episode_summaries, 'avg_assigned_coordination_mismatch'):.3f}"
+        "mean_avg_agv_picker_arrival_gap: "
+        f"{mean_metric(episode_summaries, 'avg_agv_picker_arrival_gap'):.3f}"
     )
     return 0
 

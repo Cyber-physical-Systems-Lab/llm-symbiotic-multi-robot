@@ -140,6 +140,7 @@ class EpisodeRunner:
         assigned_cooperative_tasks = 0
         total_assigned_sync_cost = 0
         total_assigned_eta_gap = 0
+        episode_records: list[dict[str, Any]] = []
 
         while steps < self.config.max_steps:
             if self.config.render:
@@ -208,39 +209,51 @@ class EpisodeRunner:
                 total_assigned_sync_cost += self._safe_nonnegative_int(objective_scores.get("sum_sync_cost", 0))
                 total_assigned_eta_gap += self._safe_nonnegative_int(objective_scores.get("sum_eta_gap", 0))
 
+            record = {
+                "episode_idx": episode_idx,
+                "step_idx": steps,
+                "actions": actions,
+                "info": self._to_jsonable(info),
+                "reward_sum": reward_sum,
+                "state_min": {
+                    "agents": state["agents"],
+                    "requests_rack_ids_topk": state["requests_rack_ids_topk"],
+                    "empty_rack_ids_topk": state["empty_rack_ids_topk"],
+                    "goal_ids": state["goal_ids"],
+                    "location_coords_xy": state.get("location_coords_xy", {}),
+                },
+                "comm_request": comm_payload["comm_request"],
+                "comm_response": comm_payload["comm_response"],
+                "comm_final_plan": comm_payload["comm_final_plan"],
+                "communication_used": comm_payload["communication_used"],
+                "planner_last_communication_triggered": comm_payload["planner_last_communication_triggered"],
+                "planner_throttled_by_budget": comm_payload["planner_throttled_by_budget"],
+                "planner_has_request": comm_payload["planner_has_request"],
+                "planner_has_response": comm_payload["planner_has_response"],
+                "planner_has_final_plan": comm_payload["planner_has_final_plan"],
+                "comm_diagnostics": comm_diagnostics,
+                "recommend_count": recommend_count,
+                "decline_count": decline_count,
+                "multi_option_recommend_count": multi_option_recommend_count,
+            }
+            episode_records.append(record)
             if jsonl_handle is not None:
-                record = {
-                    "episode_idx": episode_idx,
-                    "step_idx": steps,
-                    "actions": actions,
-                    "info": self._to_jsonable(info),
-                    "reward_sum": reward_sum,
-                    "state_min": {
-                        "agents": state["agents"],
-                        "requests_rack_ids_topk": state["requests_rack_ids_topk"],
-                        "empty_rack_ids_topk": state["empty_rack_ids_topk"],
-                        "goal_ids": state["goal_ids"],
-                    },
-                    "comm_request": comm_payload["comm_request"],
-                    "comm_response": comm_payload["comm_response"],
-                    "comm_final_plan": comm_payload["comm_final_plan"],
-                    "communication_used": comm_payload["communication_used"],
-                    "planner_last_communication_triggered": comm_payload["planner_last_communication_triggered"],
-                    "planner_throttled_by_budget": comm_payload["planner_throttled_by_budget"],
-                    "planner_has_request": comm_payload["planner_has_request"],
-                    "planner_has_response": comm_payload["planner_has_response"],
-                    "planner_has_final_plan": comm_payload["planner_has_final_plan"],
-                    "comm_diagnostics": comm_diagnostics,
-                    "recommend_count": recommend_count,
-                    "decline_count": decline_count,
-                    "multi_option_recommend_count": multi_option_recommend_count,
-                }
                 jsonl_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
             steps += 1
             done = all(bool(flag) for flag in terminateds)
             if done:
                 break
+
+        (
+            completed_assigned_task_count,
+            total_assigned_task_completion_time,
+        ) = self._compute_assigned_task_completion_metrics(episode_records)
+        (
+            completed_assigned_task_count_for_wait,
+            total_assigned_target_wait_time_all,
+            total_assigned_target_wait_time_completed,
+        ) = self._compute_assigned_task_wait_metrics(episode_records)
 
         return {
             "episode_idx": episode_idx,
@@ -268,13 +281,33 @@ class EpisodeRunner:
             "zero_option_unreachable": zero_option_unreachable,
             "zero_option_no_idle_picker": zero_option_no_idle_picker,
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
-            "avg_assigned_cooperative_completion_time": (
+            "avg_planned_sync_cost": (
                 float(total_assigned_sync_cost) / float(assigned_cooperative_tasks)
                 if assigned_cooperative_tasks > 0
                 else 0.0
             ),
-            "avg_assigned_coordination_mismatch": (
+            "avg_agv_picker_arrival_gap": (
                 float(total_assigned_eta_gap) / float(assigned_cooperative_tasks)
+                if assigned_cooperative_tasks > 0
+                else 0.0
+            ),
+            "avg_execution_time_per_assignment": (
+                float(total_assigned_task_completion_time) / float(completed_assigned_task_count)
+                if completed_assigned_task_count > 0
+                else 0.0
+            ),
+            "avg_wait_time_all_assignments": (
+                float(total_assigned_target_wait_time_all) / float(assigned_cooperative_tasks)
+                if assigned_cooperative_tasks > 0
+                else 0.0
+            ),
+            "avg_wait_time_after_first_arrival": (
+                float(total_assigned_target_wait_time_completed) / float(completed_assigned_task_count_for_wait)
+                if completed_assigned_task_count_for_wait > 0
+                else 0.0
+            ),
+            "assignment_success_rate": (
+                float(completed_assigned_task_count_for_wait) / float(assigned_cooperative_tasks)
                 if assigned_cooperative_tasks > 0
                 else 0.0
             ),
@@ -504,6 +537,288 @@ class EpisodeRunner:
         if not isinstance(scores, dict):
             return None
         return scores
+
+    def _compute_assigned_task_completion_metrics(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        """Compute completed assigned-task durations from per-step records."""
+        active_tasks_by_agv: dict[int, dict[str, Any]] = {}
+        completed_task_count = 0
+        total_completion_time = 0
+
+        for idx, record in enumerate(records):
+            step_idx = self._safe_nonnegative_int(record.get("step_idx", idx))
+            carrying_by_agv = self._extract_agv_carrying_by_id(record.get("state_min"))
+
+            for agv_id, task in list(active_tasks_by_agv.items()):
+                carrying = carrying_by_agv.get(int(agv_id))
+                if carrying is None:
+                    continue
+                purpose = str(task.get("purpose", "")).upper()
+                completed = (
+                    (purpose == "LOAD" and carrying)
+                    or (purpose == "UNLOAD" and not carrying)
+                )
+                if not completed:
+                    continue
+                duration = int(step_idx) - int(task.get("start_step", step_idx))
+                if duration >= 0:
+                    completed_task_count += 1
+                    total_completion_time += int(duration)
+                active_tasks_by_agv.pop(int(agv_id), None)
+
+            comm_final_plan = record.get("comm_final_plan")
+            if not isinstance(comm_final_plan, dict):
+                continue
+            assignments = comm_final_plan.get("assignments", [])
+            if not isinstance(assignments, list):
+                continue
+            purpose_by_request = self._extract_request_purpose_map(record.get("comm_request"))
+
+            for assignment in assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                agv_id = self._safe_int(assignment.get("agv_id", 0))
+                picker_id = self._safe_int(assignment.get("picker_id", 0))
+                rack_id = self._safe_int(assignment.get("rack_id", 0))
+                request_id = assignment.get("request_id")
+                if agv_id <= 0 or picker_id <= 0 or rack_id <= 0 or not isinstance(request_id, str):
+                    continue
+
+                purpose = str(purpose_by_request.get(request_id, "")).upper()
+                if purpose not in {"LOAD", "UNLOAD"}:
+                    carrying = carrying_by_agv.get(int(agv_id))
+                    if carrying is None:
+                        continue
+                    purpose = "UNLOAD" if carrying else "LOAD"
+
+                signature = (str(request_id), int(picker_id), int(rack_id), str(purpose))
+                current_task = active_tasks_by_agv.get(int(agv_id))
+                if current_task is not None and current_task.get("signature") == signature:
+                    continue
+
+                active_tasks_by_agv[int(agv_id)] = {
+                    "signature": signature,
+                    "purpose": str(purpose),
+                    "start_step": int(step_idx),
+                }
+
+        return completed_task_count, total_completion_time
+
+    def _compute_assigned_task_wait_metrics(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        """Compute assignment-conditioned wait metrics from per-step records."""
+        active_tasks_by_agv: dict[int, dict[str, Any]] = {}
+        completed_task_count = 0
+        total_wait_all = 0
+        total_wait_completed = 0
+
+        def finalize_task(agv_id: int, completed: bool) -> None:
+            nonlocal completed_task_count, total_wait_all, total_wait_completed
+            task = active_tasks_by_agv.pop(int(agv_id), None)
+            if task is None:
+                return
+            wait_steps = int(task.get("wait_steps", 0))
+            total_wait_all += wait_steps
+            if completed:
+                completed_task_count += 1
+                total_wait_completed += wait_steps
+
+        for idx, record in enumerate(records):
+            step_idx = self._safe_nonnegative_int(record.get("step_idx", idx))
+            agents_by_id = self._extract_agents_by_id(record.get("state_min"))
+            purpose_by_request = self._extract_request_purpose_map(record.get("comm_request"))
+            rack_coords_yx_by_id = self._extract_location_coords_yx_map(record.get("state_min"))
+
+            comm_final_plan = record.get("comm_final_plan")
+            assignments = comm_final_plan.get("assignments", []) if isinstance(comm_final_plan, dict) else []
+            if not isinstance(assignments, list):
+                assignments = []
+
+            current_assignments_by_agv: dict[int, dict[str, Any]] = {}
+            for assignment in assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                agv_id = self._safe_int(assignment.get("agv_id", 0))
+                picker_id = self._safe_int(assignment.get("picker_id", 0))
+                rack_id = self._safe_int(assignment.get("rack_id", 0))
+                request_id = assignment.get("request_id")
+                if agv_id <= 0 or picker_id <= 0 or rack_id <= 0 or not isinstance(request_id, str):
+                    continue
+
+                purpose = str(purpose_by_request.get(request_id, "")).upper()
+                if purpose not in {"LOAD", "UNLOAD"}:
+                    agv_state = agents_by_id.get(int(agv_id))
+                    if not isinstance(agv_state, dict):
+                        continue
+                    purpose = "UNLOAD" if bool(agv_state.get("carrying", False)) else "LOAD"
+
+                current_assignments_by_agv[int(agv_id)] = {
+                    "signature": (str(request_id), int(picker_id), int(rack_id), str(purpose)),
+                    "purpose": str(purpose),
+                    "picker_id": int(picker_id),
+                    "rack_id": int(rack_id),
+                    "start_step": int(step_idx),
+                    "wait_steps": 0,
+                }
+
+            for agv_id, new_task in current_assignments_by_agv.items():
+                existing_task = active_tasks_by_agv.get(int(agv_id))
+                if existing_task is not None and existing_task.get("signature") != new_task.get("signature"):
+                    finalize_task(int(agv_id), completed=False)
+                if existing_task is None or existing_task.get("signature") != new_task.get("signature"):
+                    active_tasks_by_agv[int(agv_id)] = dict(new_task)
+
+            for agv_id, task in list(active_tasks_by_agv.items()):
+                agv_state = agents_by_id.get(int(agv_id))
+                if not isinstance(agv_state, dict):
+                    finalize_task(int(agv_id), completed=False)
+                    continue
+
+                purpose = str(task.get("purpose", "")).upper()
+                carrying = bool(agv_state.get("carrying", False))
+                completed = (
+                    (purpose == "LOAD" and carrying)
+                    or (purpose == "UNLOAD" and not carrying)
+                )
+                if completed:
+                    finalize_task(int(agv_id), completed=True)
+                    continue
+
+                rack_id = int(task.get("rack_id", 0))
+                picker_id = int(task.get("picker_id", 0))
+
+                picker_state = agents_by_id.get(int(picker_id))
+                rack_coords_yx = rack_coords_yx_by_id.get(int(rack_id))
+                agv_at_rack = self._agent_at_coords(agv_state, rack_coords_yx)
+                picker_at_rack = self._agent_at_coords(picker_state, rack_coords_yx)
+                if agv_at_rack or picker_at_rack:
+                    task["wait_steps"] = int(task.get("wait_steps", 0)) + 1
+
+        for agv_id in list(active_tasks_by_agv.keys()):
+            finalize_task(int(agv_id), completed=False)
+
+        return completed_task_count, total_wait_all, total_wait_completed
+
+    def _extract_request_purpose_map(self, comm_request: Any) -> dict[str, str]:
+        """Map request_id to cooperative purpose when present in comm_request."""
+        if not isinstance(comm_request, dict):
+            return {}
+        requests = comm_request.get("requests", [])
+        if not isinstance(requests, list):
+            return {}
+
+        purpose_by_request: dict[str, str] = {}
+        for item in requests:
+            if not isinstance(item, dict):
+                continue
+            request_id = item.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+            purpose = item.get("purpose")
+            if purpose is None:
+                continue
+            purpose_by_request[request_id] = str(purpose)
+        return purpose_by_request
+
+    def _extract_agv_carrying_by_id(self, state_min: Any) -> dict[int, bool]:
+        """Map AGV id to carrying state from a minimal state snapshot."""
+        if not isinstance(state_min, dict):
+            return {}
+        agents = state_min.get("agents", [])
+        if not isinstance(agents, list):
+            return {}
+
+        carrying_by_agv: dict[int, bool] = {}
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            if str(agent.get("type", "")) != "AGV":
+                continue
+            agv_id = self._safe_int(agent.get("id", 0))
+            if agv_id <= 0:
+                continue
+            carrying_by_agv[int(agv_id)] = bool(agent.get("carrying", False))
+        return carrying_by_agv
+
+    def _extract_agents_by_id(self, state_min: Any) -> dict[int, dict[str, Any]]:
+        """Map agent id to agent state from a minimal state snapshot."""
+        if not isinstance(state_min, dict):
+            return {}
+        agents = state_min.get("agents", [])
+        if not isinstance(agents, list):
+            return {}
+
+        agents_by_id: dict[int, dict[str, Any]] = {}
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            agent_id = self._safe_int(agent.get("id", 0))
+            if agent_id <= 0:
+                continue
+            agents_by_id[int(agent_id)] = agent
+        return agents_by_id
+
+    def _extract_location_coords_yx_map(self, state_min: Any) -> dict[int, tuple[int, int]]:
+        """Map location id to rack coordinates in y/x order from a minimal state snapshot."""
+        if not isinstance(state_min, dict):
+            return {}
+        location_coords_xy = state_min.get("location_coords_xy", {})
+        if not isinstance(location_coords_xy, dict):
+            return {}
+
+        coords_yx_by_id: dict[int, tuple[int, int]] = {}
+        for loc_id, coords_xy in location_coords_xy.items():
+            try:
+                parsed_loc_id = int(loc_id)
+            except (TypeError, ValueError):
+                continue
+            coords = self._normalize_coords_xy(coords_xy)
+            if coords is None:
+                continue
+            coords_yx_by_id[int(parsed_loc_id)] = coords
+        return coords_yx_by_id
+
+    def _agent_at_assigned_rack(self, agent: Any, rack_id: int) -> bool:
+        """Return whether an agent is currently at the assigned rack location."""
+        if not isinstance(agent, dict):
+            return False
+        target = self._safe_int(agent.get("target", 0))
+        if int(target) != int(rack_id):
+            return False
+        return self._same_coords(agent.get("coords_yx"), agent.get("target_coords_yx"))
+
+    def _agent_at_coords(self, agent: Any, coords_yx: tuple[int, int] | None) -> bool:
+        """Return whether an agent is physically at the given y/x coordinates."""
+        if not isinstance(agent, dict) or coords_yx is None:
+            return False
+        return self._same_coords(agent.get("coords_yx"), coords_yx)
+
+    def _same_coords(self, a: Any, b: Any) -> bool:
+        a_yx = self._normalize_coords_yx(a)
+        b_yx = self._normalize_coords_yx(b)
+        if a_yx is None or b_yx is None:
+            return False
+        return a_yx == b_yx
+
+    def _normalize_coords_yx(self, value: Any) -> tuple[int, int] | None:
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return int(value[0]), int(value[1])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _normalize_coords_xy(self, value: Any) -> tuple[int, int] | None:
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return int(value[1]), int(value[0])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _safe_int(self, value: Any) -> int:
         try:
