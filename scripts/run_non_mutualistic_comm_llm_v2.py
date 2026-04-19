@@ -165,6 +165,35 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
 
         total_cooperative_waiting_time = self._compute_cooperative_waiting_time(episode_records)
         cooperative_attempts = self._count_cooperative_attempts(episode_records)
+        trigger_reason_counts = getattr(planner, "trigger_reason_counts", {})
+        if not isinstance(trigger_reason_counts, dict):
+            trigger_reason_counts = {}
+        trigger_reason_steps = getattr(planner, "trigger_reason_steps", [])
+        if not isinstance(trigger_reason_steps, list):
+            trigger_reason_steps = []
+
+        print(
+            "EPISODE_TRIGGER_REASON_COUNTS\n",
+            json.dumps(
+                {
+                    "episode_idx": int(episode_idx),
+                    "counts": trigger_reason_counts,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        print(
+            "EPISODE_TRIGGER_REASON_STEPS_TAIL\n",
+            json.dumps(
+                {
+                    "episode_idx": int(episode_idx),
+                    "steps_tail": trigger_reason_steps[-20:],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
 
         return {
             "episode_idx": episode_idx,
@@ -441,7 +470,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--idle_probe_gap_steps",
         type=int,
-        default=3,
+        default=25,
         help="Gap between idle-probe communication attempts.",
     )
     parser.add_argument(

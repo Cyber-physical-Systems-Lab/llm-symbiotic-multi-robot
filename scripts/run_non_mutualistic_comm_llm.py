@@ -522,7 +522,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--idle_probe_gap_steps",
         type=int,
-        default=3,
+        default=25,
         help="Gap between idle-probe communication attempts.",
     )
     parser.add_argument(

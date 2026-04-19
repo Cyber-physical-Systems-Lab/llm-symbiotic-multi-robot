@@ -147,6 +147,9 @@ class SymbioticCommLLMPlanner:
         self.last_communication_triggered: bool = False
         self.planner_throttled_by_budget: bool = False
         self.last_used_fallback: bool = False
+        self.last_trigger_reasons: list[str] = []
+        self.trigger_reason_counts: Dict[str, int] = {}
+        self.trigger_reason_steps: list[dict[str, Any]] = []
 
         # Whole-plan fallback (rule-based symbiotic). We'll instantiate per-fallback to avoid internal state coupling.
         # self._rule_fallback = RuleSymbioticPlanner()
@@ -189,6 +192,11 @@ class SymbioticCommLLMPlanner:
 
         self.last_communication_triggered = True
         self.last_used_fallback = False
+        if self.config.debug:
+            print(
+                "COMM_TRIGGER_REASONS\n",
+                json.dumps(self.last_trigger_reasons, ensure_ascii=False, indent=2),
+            )
 
         # Build batch request contexts (deterministic)
         batch_requests = self._build_batch_requests(state)
@@ -531,6 +539,7 @@ class SymbioticCommLLMPlanner:
         current_timeout_agv_ids: set[int] = set()
         current_target_lost_agv_ids: set[int] = set()
         current_coordination_alert = bool(coordination_alert)
+        trigger_reasons: list[str] = []
 
         def finish(result: bool) -> bool:
             self.last_available_picker_count = int(available_picker_count)
@@ -538,6 +547,26 @@ class SymbioticCommLLMPlanner:
             self._previous_timeout_agv_ids = set(current_timeout_agv_ids)
             self._previous_target_lost_agv_ids = set(current_target_lost_agv_ids)
             self._previous_coordination_alert = bool(current_coordination_alert)
+            if result:
+                deduped_trigger_reasons: list[str] = []
+                seen_reasons: set[str] = set()
+                for reason in trigger_reasons:
+                    if not isinstance(reason, str) or reason in seen_reasons:
+                        continue
+                    seen_reasons.add(reason)
+                    deduped_trigger_reasons.append(reason)
+                self.last_trigger_reasons = deduped_trigger_reasons
+                for reason in self.last_trigger_reasons:
+                    self.trigger_reason_counts[reason] = int(self.trigger_reason_counts.get(reason, 0)) + 1
+                self.trigger_reason_steps.append(
+                    {
+                        "step": int(self.step_counter),
+                        "reasons": list(self.last_trigger_reasons),
+                        "available_pickers": int(available_picker_count),
+                    }
+                )
+            else:
+                self.last_trigger_reasons = []
             return bool(result)
 
         # ----------------------------
@@ -633,6 +662,10 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"target_lost:new={target_lost_new_ids},retry={target_lost_retry_ids}"
             )
+        if target_lost_new_ids:
+            trigger_reasons.append("recovery_target_lost_new")
+        if target_lost_retry_ids:
+            trigger_reasons.append("recovery_target_lost_retry")
 
         timeout_new_ids, timeout_retry_ids = self._select_recovery_agv_triggers(
             current_agv_ids=current_timeout_agv_ids,
@@ -644,6 +677,10 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"timeout:new={timeout_new_ids},retry={timeout_retry_ids}"
             )
+        if timeout_new_ids:
+            trigger_reasons.append("recovery_timeout_new")
+        if timeout_retry_ids:
+            trigger_reasons.append("recovery_timeout_retry")
 
         stalled_new_ids, stalled_retry_ids = self._select_recovery_agv_triggers(
             current_agv_ids=current_stalled_agv_ids,
@@ -655,6 +692,10 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"stalled:new={stalled_new_ids},retry={stalled_retry_ids}"
             )
+        if stalled_new_ids:
+            trigger_reasons.append("recovery_stalled_new")
+        if stalled_retry_ids:
+            trigger_reasons.append("recovery_stalled_retry")
 
         coordination_alert_new = False
         coordination_alert_retry = False
@@ -668,6 +709,10 @@ class SymbioticCommLLMPlanner:
                 recovery_debug_parts.append(
                     f"coordination_alert:{'new' if coordination_alert_new else 'retry'}"
                 )
+        if coordination_alert_new:
+            trigger_reasons.append("recovery_coordination_alert_new")
+        if coordination_alert_retry:
+            trigger_reasons.append("recovery_coordination_alert_retry")
 
         # Strong recovery triggers should bypass ordinary min-gap throttling,
         # but are now gated as event triggers with low-frequency retries.
@@ -689,6 +734,7 @@ class SymbioticCommLLMPlanner:
         # positive, allow one immediate communication round if there is a real
         # idle cooperation need.
         if picker_became_available and idle_need:
+            trigger_reasons.append("picker_became_available")
             return finish(True)
 
         # ----------------------------
@@ -720,6 +766,7 @@ class SymbioticCommLLMPlanner:
                     )
                     if needs_new_task:
                         self.last_idle_probe_step = self.step_counter
+                        trigger_reasons.append("idle_probe_no_picker")
                         return finish(True)
 
             return finish(False)
@@ -740,6 +787,7 @@ class SymbioticCommLLMPlanner:
             self.planner_throttled_by_budget = True
             return finish(False)
 
+        trigger_reasons.append("ordinary_idle_need")
         return finish(True)
 
     def _scarcity_aware_min_gap(self, state: dict[str, Any], agents: list[dict[str, Any]]) -> int:
