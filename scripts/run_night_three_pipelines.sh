@@ -11,11 +11,11 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=3
+EPISODES=4
 SEED=1
 MAX_STEPS=1500
 
-OUT_DIR="outputs/night_run_20260420"
+OUT_DIR="outputs/night_run_20260421"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
