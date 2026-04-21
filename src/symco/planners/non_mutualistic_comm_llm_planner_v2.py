@@ -123,6 +123,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         aggregate_objective_requests: list[dict[str, Any]] = []
         batch_failure_reasons: list[str] = []
 
+        reserved_agv_ids_this_round: set[int] = set()
         reserved_picker_ids_this_round: set[int] = set()
         reserved_rack_ids_this_round: set[int] = set()
 
@@ -141,6 +142,8 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 state=state,
                 batch_requests=request_batch,
                 reserved_rack_ids=reserved_rack_ids_this_round,
+                reserved_agv_ids=reserved_agv_ids_this_round,
+                reserved_picker_ids=reserved_picker_ids_this_round,
             )
             if self.config.debug:
                 print(
@@ -234,6 +237,12 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 reserved_picker_ids_this_round,
                 reserved_rack_ids_this_round,
             )
+            for assignment in batch_assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                agv_id = self._safe_int(assignment.get("agv_id"))
+                if agv_id > 0:
+                    reserved_agv_ids_this_round.add(int(agv_id))
 
             aggregate_skipped.extend(
                 [
@@ -341,6 +350,8 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         state: dict[str, Any],
         batch_requests: list[dict[str, Any]],
         reserved_rack_ids: set[int] | None = None,
+        reserved_agv_ids: set[int] | None = None,
+        reserved_picker_ids: set[int] | None = None,
     ) -> dict[str, Any]:
         """
         Build Stage 1 payload using:
@@ -351,13 +362,31 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
           idle_pickers, picker_scarcity, nearby_idle_pickers
         """
         reserved_rack_ids = set() if reserved_rack_ids is None else {int(x) for x in reserved_rack_ids}
+        reserved_agv_ids = set() if reserved_agv_ids is None else {int(x) for x in reserved_agv_ids}
+        reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
 
         agents = self._sorted_agents(state)
-        idle_agvs = sum(1 for agent in agents if agent.get("type") == "AGV" and not bool(agent.get("busy", False)))
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
+        idle_agvs = sum(
+            1
+            for agent in agents
+            if agent.get("type") == "AGV"
+            and not bool(agent.get("busy", False))
+            and int(agent["id"]) not in reserved_agv_ids
+        )
+        active_reserved_picker_ids = {
+            int(assignment.get("picker_id", -1))
+            for assignment in self.active_assignments.values()
+            if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
+        }
         idle_pickers = sum(
             1
             for agent in agents
             if agent.get("type") == "PICKER" and not bool(agent.get("busy", False))
+            and int(agent["id"]) not in active_reserved_picker_ids
+            and int(agent["id"]) not in protected_picker_ids
+            and int(agent["id"]) not in reserved_picker_ids
         )
         picker_scarcity = "high" if idle_pickers <= 1 else "low"
 
@@ -374,17 +403,54 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         for req in batch_requests:
             agv_id = int(req["agv_id"])
             pool = [int(x) for x in req["candidate_pool"]]
+            anchored_recovery_target = self._safe_int(req.get("anchored_recovery_target"))
             cost_map = self._agent_cost_map(state, "agv", agv_id)
             agent_index = agv_index_by_id.get(agv_id, -1)
+            agv_state = next(
+                (
+                    agent
+                    for agent in agents
+                    if isinstance(agent, dict)
+                    and agent.get("type") == "AGV"
+                    and int(agent.get("id", 0) or 0) == agv_id
+                ),
+                None,
+            )
+            current_target = self._safe_int(agv_state.get("target")) if isinstance(agv_state, dict) else 0
+            pos = self._coords_tuple(agv_state.get("coords_yx")) if isinstance(agv_state, dict) else None
+            target_coords = self._coords_tuple(agv_state.get("target_coords_yx")) if isinstance(agv_state, dict) else None
+            at_target = (
+                isinstance(agv_state, dict)
+                and bool(agv_state.get("busy", False))
+                and current_target > 0
+                and pos is not None
+                and target_coords is not None
+                and pos == target_coords
+            )
 
             candidates: list[dict[str, Any]] = []
             for rack_id in pool:
+                is_anchored_recovery_candidate = (
+                    anchored_recovery_target > 0
+                    and int(rack_id) == int(anchored_recovery_target)
+                )
                 if rack_id in reserved_rack_ids:
                     continue
-                if agent_index >= 0 and not self._is_valid_action(valid_masks, agent_index, rack_id):
+                if (
+                    agent_index >= 0
+                    and not is_anchored_recovery_candidate
+                    and not self._is_valid_action(valid_masks, agent_index, rack_id)
+                ):
                     continue
 
                 eta_agv = self._safe_cost(cost_map, rack_id)
+                if (
+                    eta_agv is None
+                    and is_anchored_recovery_candidate
+                    and at_target
+                    and int(rack_id) == int(current_target)
+                ):
+                    eta_agv = 0
                 if eta_agv is None:
                     continue
 
@@ -422,6 +488,9 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                     "agv_id": int(agv_id),
                     "purpose": str(req["purpose"]),
                     "candidates": candidates,
+                    "is_recovery_request": bool(req.get("is_recovery_request", False)),
+                    "anchored_recovery_target": self._safe_int(req.get("anchored_recovery_target")),
+                    "preferred_picker_id": self._safe_int(req.get("preferred_picker_id")),
                 }
             )
 
@@ -480,6 +549,9 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 "agv_id": int(item.get("agv_id", 0)),
                 "purpose": str(item.get("purpose", "")),
                 "candidates": candidates,
+                "is_recovery_request": bool(item.get("is_recovery_request", False)),
+                "anchored_recovery_target": self._safe_int(item.get("anchored_recovery_target")),
+                "preferred_picker_id": self._safe_int(item.get("preferred_picker_id")),
             }
 
         raw_by_request: dict[str, dict[str, Any]] = {}
@@ -510,6 +582,9 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 "purpose": str(meta["purpose"]),
                 "committed_rack_id": int(committed_rack_id),
                 "candidates": meta["candidates"],
+                "is_recovery_request": bool(meta.get("is_recovery_request", False)),
+                "anchored_recovery_target": self._safe_int(meta.get("anchored_recovery_target")),
+                "preferred_picker_id": self._safe_int(meta.get("preferred_picker_id")),
             }
             sanitized.append(sanitized_item)
             used_racks.add(int(committed_rack_id))
@@ -598,6 +673,8 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
 
         agents = self._sorted_agents(state)
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
 
         active_reserved_picker_ids = {
             int(assignment.get("picker_id", -1))
@@ -611,6 +688,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             if agent.get("type") == "PICKER"
             and not bool(agent.get("busy", False))
             and int(agent["id"]) not in active_reserved_picker_ids
+            and int(agent["id"]) not in protected_picker_ids
             and int(agent["id"]) not in reserved_picker_ids
         ]
 
@@ -623,12 +701,63 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             committed_rack_id = self._safe_int(req.get("committed_rack_id"))
             if committed_rack_id <= 0:
                 continue
+            agv_id = self._safe_int(req.get("agv_id"))
+            preferred_picker_id = self._safe_int(req.get("preferred_picker_id"))
+            protected_picker_id_for_request = int(protected_picker_bindings.get(int(agv_id), -1))
+            is_recovery_request = bool(req.get("is_recovery_request", False))
             eta_agv = self._lookup_stage1_eta_agv(req, committed_rack_id)
             if eta_agv < 0:
                 continue
 
+            candidate_pickers = list(available_pickers)
+            preferred_picker_state = None
+            if preferred_picker_id > 0:
+                preferred_picker_state = next(
+                    (
+                        agent
+                        for agent in agents
+                        if agent.get("type") == "PICKER"
+                        and int(agent.get("id", 0) or 0) == int(preferred_picker_id)
+                        and not bool(agent.get("busy", False))
+                        and int(agent.get("id", 0) or 0) not in reserved_picker_ids
+                    ),
+                    None,
+                )
+                if preferred_picker_state is not None:
+                    candidate_pickers = [
+                        agent
+                        for agent in candidate_pickers
+                        if int(agent.get("id", 0) or 0) != int(preferred_picker_id)
+                    ]
+                    candidate_pickers.insert(0, preferred_picker_state)
+
+            if protected_picker_id_for_request > 0:
+                protected_picker_state = next(
+                    (
+                        agent
+                        for agent in agents
+                        if agent.get("type") == "PICKER"
+                        and int(agent.get("id", 0) or 0) == int(protected_picker_id_for_request)
+                        and not bool(agent.get("busy", False))
+                        and int(agent.get("id", 0) or 0) not in reserved_picker_ids
+                    ),
+                    None,
+                )
+                if protected_picker_state is not None and all(
+                    int(existing.get("id", 0) or 0) != int(protected_picker_id_for_request)
+                    for existing in candidate_pickers
+                ):
+                    candidate_pickers.append(protected_picker_state)
+
+            if is_recovery_request and preferred_picker_state is not None:
+                candidate_pickers = [
+                    agent
+                    for agent in candidate_pickers
+                    if int(agent.get("id", 0) or 0) == int(preferred_picker_id)
+                ]
+
             picker_candidates: list[dict[str, Any]] = []
-            for picker in available_pickers:
+            for picker in candidate_pickers:
                 picker_id = int(picker["id"])
                 eta_picker = self._safe_cost(
                     self._agent_cost_map(state, "picker", picker_id),
@@ -951,7 +1080,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         if self.config.debug:
             print("WHOLE_PLAN_FALLBACK_NON_MUTUALISTIC_PARTNER_AWARE:", reason)
 
-        self.active_assignments.clear()
+        self._update_active_assignments_from_state(state)
         self.last_communication_step = self.step_counter
 
         batch_requests = self._build_batch_requests(state)
@@ -979,6 +1108,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             max(1, int(self.config.max_requests_per_batch)),
         )
 
+        reserved_agv_ids_this_round: set[int] = set()
         reserved_picker_ids_this_round: set[int] = set()
         reserved_rack_ids_this_round: set[int] = set()
 
@@ -993,6 +1123,8 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 state=state,
                 batch_requests=request_batch,
                 reserved_rack_ids=reserved_rack_ids_this_round,
+                reserved_agv_ids=reserved_agv_ids_this_round,
+                reserved_picker_ids=reserved_picker_ids_this_round,
             )
             stage1_bundle = self._build_stage1_deterministic_from_payload(stage1_payload)
             all_stage1_requests.extend(stage1_bundle)
@@ -1026,6 +1158,12 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 reserved_picker_ids_this_round,
                 reserved_rack_ids_this_round,
             )
+            for assignment in batch_assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                agv_id = self._safe_int(assignment.get("agv_id"))
+                if agv_id > 0:
+                    reserved_agv_ids_this_round.add(int(agv_id))
 
             aggregate_skipped.extend(
                 [

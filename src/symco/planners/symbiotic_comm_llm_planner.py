@@ -123,18 +123,25 @@ class SymbioticCommLLMPlanner:
         self.last_available_picker_count: int = 0
         self.active_assignments: Dict[int, Dict[str, Any]] = {}  # agv_id -> {picker_id,rack_id,purpose,start_step}
         self.N_ENROUTE: int = 8
+        self.N_AT_TARGET_STALLED: int = 10
         self._stagnation: Dict[int, Dict[str, Any]] = {}
+        self._at_target_progress: Dict[int, Dict[str, Any]] = {}
         self.budget_window_steps: int = 20
         self.budget_max_comm_steps: int = 3
         self._communication_history: List[int] = []
         self._previous_stalled_agv_ids: Set[int] = set()
+        self._previous_at_target_stalled_agv_ids: Set[int] = set()
         self._previous_timeout_agv_ids: Set[int] = set()
         self._previous_target_lost_agv_ids: Set[int] = set()
         self._last_stalled_trigger_step_by_agv: Dict[int, int] = {}
+        self._last_at_target_stalled_trigger_step_by_agv: Dict[int, int] = {}
         self._last_timeout_trigger_step_by_agv: Dict[int, int] = {}
         self._last_target_lost_trigger_step_by_agv: Dict[int, int] = {}
         self._previous_coordination_alert: bool = False
         self._last_coordination_alert_trigger_step: int = -10**9
+        self.current_recovery_request_agv_ids: Set[int] = set()
+        self._last_registered_assignment_by_agv: Dict[int, Dict[str, Any]] = {}
+        self._last_dropped_assignment_by_agv: Dict[int, Dict[str, Any]] = {}
 
         # Region mapping for load balancing
         self.rack_to_region = None   # 将在 plan 中从 state 读取
@@ -150,6 +157,12 @@ class SymbioticCommLLMPlanner:
         self.last_trigger_reasons: list[str] = []
         self.trigger_reason_counts: Dict[str, int] = {}
         self.trigger_reason_steps: list[dict[str, Any]] = []
+        self.last_no_communication_reason_trace: dict[str, Any] = {}
+        self.last_observed_stalled_agv_ids: Set[int] = set()
+        self.last_observed_at_target_stalled_agv_ids: Set[int] = set()
+        self.last_observed_timeout_agv_ids: Set[int] = set()
+        self.last_observed_target_lost_agv_ids: Set[int] = set()
+        self._stall_trace_emitted_agv_ids: Set[int] = set()
 
         # Whole-plan fallback (rule-based symbiotic). We'll instantiate per-fallback to avoid internal state coupling.
         # self._rule_fallback = RuleSymbioticPlanner()
@@ -251,8 +264,11 @@ class SymbioticCommLLMPlanner:
         all_assignments: list[dict[str, Any]] = []
         batch_failure_reasons: list[str] = []
 
+        reserved_agv_ids_this_round: set[int] = set()
         reserved_picker_ids_this_round: set[int] = set()
         reserved_rack_ids_this_round: set[int] = set()
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
         active_reserved_picker_ids = {
             int(assignment.get("picker_id", -1))
             for assignment in self.active_assignments.values()
@@ -264,6 +280,7 @@ class SymbioticCommLLMPlanner:
             if agent.get("type") == "PICKER"
             and not bool(agent.get("busy", False))
             and int(agent["id"]) not in active_reserved_picker_ids
+            and int(agent["id"]) not in protected_picker_ids
         ]
         remaining_assignment_budget = int(len(available_pickers_for_round))
 
@@ -275,7 +292,12 @@ class SymbioticCommLLMPlanner:
                     json.dumps(batch_request_ids, ensure_ascii=False, indent=2),
                 )
 
-            stage1_payload = self._build_stage1_payload(state, request_batch)
+            stage1_payload = self._build_stage1_payload(
+                state,
+                request_batch,
+                reserved_agv_ids=reserved_agv_ids_this_round,
+                reserved_picker_ids=reserved_picker_ids_this_round,
+            )
             if self.config.debug:
                 print(f"BATCH_{batch_index}_STAGE1_PAYLOAD\n", json.dumps(stage1_payload, ensure_ascii=False, indent=2))
 
@@ -452,6 +474,12 @@ class SymbioticCommLLMPlanner:
                 reserved_picker_ids_this_round,
                 reserved_rack_ids_this_round,
             )
+            for assignment in batch_assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                agv_id = self._safe_int(assignment.get("agv_id"))
+                if agv_id > 0:
+                    reserved_agv_ids_this_round.add(int(agv_id))
 
             if self.config.debug:
                 print(
@@ -536,18 +564,60 @@ class SymbioticCommLLMPlanner:
         empty_racks = state.get("empty_rack_ids_topk", [])
         coordination_alert = bool(state.get("coordination_alert", False))
         current_stalled_agv_ids: set[int] = set()
+        current_at_target_stalled_agv_ids: set[int] = set()
         current_timeout_agv_ids: set[int] = set()
         current_target_lost_agv_ids: set[int] = set()
         current_coordination_alert = bool(coordination_alert)
         trigger_reasons: list[str] = []
+        accepted_recovery_agv_ids: set[int] = set()
+
+        def preview_no_batch_requests_possible() -> bool:
+            preview_requests, _ = self._build_batch_request_trace(state)
+            return len(preview_requests) == 0
+
+        def record_no_communication_trace(reason: str, **extra: Any) -> None:
+            trace = {
+                "step": int(self.step_counter),
+                "reason": str(reason),
+                "available_pickers": int(available_picker_count),
+                "idle_need": bool(idle_need),
+                "no_recovery_trigger_accepted": not bool(accepted_recovery_agv_ids),
+                "recovery_agv_ids": sorted(int(x) for x in accepted_recovery_agv_ids),
+                "recent_comm": bool(extra.get("recent_comm", False)),
+                "min_gap": (
+                    int(extra["min_gap"]) if extra.get("min_gap") is not None else None
+                ),
+                "no_picker_idle_probe_gap_not_reached": bool(
+                    extra.get("no_picker_idle_probe_gap_not_reached", False)
+                ),
+                "idle_probe_gap_remaining": (
+                    int(extra["idle_probe_gap_remaining"])
+                    if extra.get("idle_probe_gap_remaining") is not None
+                    else None
+                ),
+                "budget_throttling": bool(extra.get("budget_throttling", False)),
+                "no_batch_requests_possible": bool(extra.get("no_batch_requests_possible", False)),
+            }
+            self.last_no_communication_reason_trace = trace
 
         def finish(result: bool) -> bool:
             self.last_available_picker_count = int(available_picker_count)
             self._previous_stalled_agv_ids = set(current_stalled_agv_ids)
+            self._previous_at_target_stalled_agv_ids = set(current_at_target_stalled_agv_ids)
             self._previous_timeout_agv_ids = set(current_timeout_agv_ids)
             self._previous_target_lost_agv_ids = set(current_target_lost_agv_ids)
             self._previous_coordination_alert = bool(current_coordination_alert)
+            self.last_observed_stalled_agv_ids = set(current_stalled_agv_ids)
+            self.last_observed_at_target_stalled_agv_ids = set(current_at_target_stalled_agv_ids)
+            self.last_observed_timeout_agv_ids = set(current_timeout_agv_ids)
+            self.last_observed_target_lost_agv_ids = set(current_target_lost_agv_ids)
             if result:
+                self.current_recovery_request_agv_ids = {
+                    int(agv_id)
+                    for agv_id in accepted_recovery_agv_ids
+                    if int(agv_id) > 0
+                }
+                self.last_no_communication_reason_trace = {}
                 deduped_trigger_reasons: list[str] = []
                 seen_reasons: set[str] = set()
                 for reason in trigger_reasons:
@@ -566,6 +636,7 @@ class SymbioticCommLLMPlanner:
                     }
                 )
             else:
+                self.current_recovery_request_agv_ids = set()
                 self.last_trigger_reasons = []
             return bool(result)
 
@@ -626,6 +697,7 @@ class SymbioticCommLLMPlanner:
         # These should remain available even under picker scarcity.
         # ----------------------------
         current_stalled_agv_ids = self._update_stagnation_and_check(state, agents)
+        current_at_target_stalled_agv_ids = self._update_at_target_progress_and_check(state, agents)
         agents_by_id = {int(a["id"]): a for a in agents if isinstance(a, dict) and "id" in a}
 
         for agv_id, assignment in self.active_assignments.items():
@@ -662,6 +734,7 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"target_lost:new={target_lost_new_ids},retry={target_lost_retry_ids}"
             )
+        accepted_recovery_agv_ids.update(int(agv_id) for agv_id in target_lost_new_ids + target_lost_retry_ids)
         if target_lost_new_ids:
             trigger_reasons.append("recovery_target_lost_new")
         if target_lost_retry_ids:
@@ -677,6 +750,7 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"timeout:new={timeout_new_ids},retry={timeout_retry_ids}"
             )
+        accepted_recovery_agv_ids.update(int(agv_id) for agv_id in timeout_new_ids + timeout_retry_ids)
         if timeout_new_ids:
             trigger_reasons.append("recovery_timeout_new")
         if timeout_retry_ids:
@@ -692,10 +766,29 @@ class SymbioticCommLLMPlanner:
             recovery_debug_parts.append(
                 f"stalled:new={stalled_new_ids},retry={stalled_retry_ids}"
             )
+        accepted_recovery_agv_ids.update(int(agv_id) for agv_id in stalled_new_ids + stalled_retry_ids)
         if stalled_new_ids:
             trigger_reasons.append("recovery_stalled_new")
         if stalled_retry_ids:
             trigger_reasons.append("recovery_stalled_retry")
+
+        at_target_stalled_new_ids, at_target_stalled_retry_ids = self._select_recovery_agv_triggers(
+            current_agv_ids=current_at_target_stalled_agv_ids,
+            previous_agv_ids=self._previous_at_target_stalled_agv_ids,
+            last_trigger_step_by_agv=self._last_at_target_stalled_trigger_step_by_agv,
+            cooldown_steps=15,
+        )
+        if at_target_stalled_new_ids or at_target_stalled_retry_ids:
+            recovery_debug_parts.append(
+                f"at_target_stalled:new={at_target_stalled_new_ids},retry={at_target_stalled_retry_ids}"
+            )
+        accepted_recovery_agv_ids.update(
+            int(agv_id) for agv_id in at_target_stalled_new_ids + at_target_stalled_retry_ids
+        )
+        if at_target_stalled_new_ids:
+            trigger_reasons.append("recovery_at_target_stalled_new")
+        if at_target_stalled_retry_ids:
+            trigger_reasons.append("recovery_at_target_stalled_retry")
 
         coordination_alert_new = False
         coordination_alert_retry = False
@@ -769,6 +862,15 @@ class SymbioticCommLLMPlanner:
                         trigger_reasons.append("idle_probe_no_picker")
                         return finish(True)
 
+            record_no_communication_trace(
+                "no_picker_idle_probe_gap_not_reached",
+                no_picker_idle_probe_gap_not_reached=True,
+                idle_probe_gap_remaining=(
+                    int(self.config.idle_probe_gap_steps)
+                    - (self.step_counter - self.last_idle_probe_step)
+                ),
+                no_batch_requests_possible=preview_no_batch_requests_possible(),
+            )
             return finish(False)
 
         # ----------------------------
@@ -776,15 +878,31 @@ class SymbioticCommLLMPlanner:
         # Apply min-gap and budget throttling here.
         # ----------------------------
         if not idle_need:
+            record_no_communication_trace(
+                "no_idle_need",
+                no_batch_requests_possible=preview_no_batch_requests_possible(),
+            )
             return finish(False)
 
         min_gap = self._scarcity_aware_min_gap(state, agents)
         recent_comm = (self.step_counter - self.last_communication_step) < min_gap
         if recent_comm:
+            record_no_communication_trace(
+                "recent_comm_due_to_min_gap",
+                recent_comm=True,
+                min_gap=min_gap,
+                no_batch_requests_possible=preview_no_batch_requests_possible(),
+            )
             return finish(False)
 
         if self._is_budget_throttled():
             self.planner_throttled_by_budget = True
+            record_no_communication_trace(
+                "budget_throttling",
+                budget_throttling=True,
+                min_gap=min_gap,
+                no_batch_requests_possible=preview_no_batch_requests_possible(),
+            )
             return finish(False)
 
         trigger_reasons.append("ordinary_idle_need")
@@ -903,8 +1021,11 @@ class SymbioticCommLLMPlanner:
             )
             if not enroute:
                 tracker["no_move"] = 0
+                self._stall_trace_emitted_agv_ids.discard(int(agent_id))
             elif int(tracker.get("no_move", 0)) >= self.N_ENROUTE:
                 stalled_agv_ids.add(int(agent_id))
+                if self.config.debug and int(agent_id) not in self._stall_trace_emitted_agv_ids:
+                    self._stall_trace_emitted_agv_ids.add(int(agent_id))
 
         stale_agent_ids = set(self._stagnation.keys()) - seen_agent_ids
         for agent_id in stale_agent_ids:
@@ -912,7 +1033,87 @@ class SymbioticCommLLMPlanner:
 
         return stalled_agv_ids
 
+    def _update_at_target_progress_and_check(
+        self,
+        state: dict[str, Any],
+        agents: list[dict[str, Any]],
+    ) -> set[int]:
+        """Track AGVs stuck at target without state progress and return stalled ids."""
+        seen_agent_ids: set[int] = set()
+        stalled_agv_ids: set[int] = set()
+
+        for agent in agents:
+            if not isinstance(agent, dict) or "id" not in agent:
+                continue
+            if agent.get("type") != "AGV":
+                continue
+
+            agent_id = int(agent["id"])
+            seen_agent_ids.add(agent_id)
+            pos = self._coords_tuple(agent.get("coords_yx"))
+            target = int(agent.get("target", 0) or 0)
+            target_coords = self._coords_tuple(agent.get("target_coords_yx"))
+            snapshot = {
+                "busy": bool(agent.get("busy", False)),
+                "carrying": bool(agent.get("carrying", False)),
+                "has_delivered": bool(agent.get("has_delivered", False)),
+                "target": int(target),
+            }
+            tracker = self._at_target_progress.setdefault(
+                agent_id,
+                {
+                    "snapshot": dict(snapshot),
+                    "no_progress": 0,
+                },
+            )
+
+            at_target = (
+                bool(agent.get("busy", False))
+                and int(target) != 0
+                and pos is not None
+                and target_coords is not None
+                and pos == target_coords
+            )
+            last_snapshot = tracker.get("snapshot", {})
+            no_progress = int(tracker.get("no_progress", 0))
+
+            if not at_target:
+                tracker["snapshot"] = dict(snapshot)
+                tracker["no_progress"] = 0
+                continue
+
+            if snapshot == last_snapshot:
+                no_progress += 1
+            else:
+                no_progress = 0
+
+            tracker["snapshot"] = dict(snapshot)
+            tracker["no_progress"] = int(no_progress)
+
+            if int(no_progress) >= int(self.N_AT_TARGET_STALLED):
+                if self._has_live_cooperative_context(state, agent):
+                    continue
+                stalled_agv_ids.add(int(agent_id))
+
+        stale_agent_ids = set(self._at_target_progress.keys()) - seen_agent_ids
+        for agent_id in stale_agent_ids:
+            self._at_target_progress.pop(agent_id, None)
+
+        return stalled_agv_ids
+
     def _coords_tuple(self, coords: Any) -> Optional[Tuple[int, int]]:
+        if not isinstance(coords, (list, tuple)) or len(coords) != 2:
+            return None
+        try:
+            return int(coords[0]), int(coords[1])
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_coords_yx(self, coords: Any) -> Optional[Tuple[int, int]]:
+        return self._coords_tuple(coords)
+    
+    def _normalize_coords_xy(self, coords: Any) -> Optional[Tuple[int, int]]:
+        """Normalize coordinates in (x, y) order into an integer tuple."""
         if not isinstance(coords, (list, tuple)) or len(coords) != 2:
             return None
         try:
@@ -948,6 +1149,8 @@ class SymbioticCommLLMPlanner:
         if rack_id <= 0:
             return 0
 
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
         count = 0
         for agent in state.get("agents", []):
             if not isinstance(agent, dict):
@@ -955,6 +1158,8 @@ class SymbioticCommLLMPlanner:
             if agent.get("type") != "PICKER":
                 continue
             if bool(agent.get("busy", False)):
+                continue
+            if int(agent.get("id", 0) or 0) in protected_picker_ids:
                 continue
 
             picker_id = self._safe_int(agent.get("id"))
@@ -1002,14 +1207,249 @@ class SymbioticCommLLMPlanner:
                     "has_delivered": agent.get("has_delivered"),
                     "target": agent.get("target"),
                     "target_coords_yx": agent.get("target_coords_yx"),
+                    "coords_yx": agent.get("coords_yx"),
                 }
             )
         print("empty_rack_ids_topk:", empty_racks)
         if not empty_racks:
             print("empty_rack_ids_topk is EMPTY")
         print("batch_requests:", batch_requests)
-        print("fixed_direct_actions:", self._build_fixed_direct_actions(state))
+        fixed_direct_actions = self._build_fixed_direct_actions(state)
+        print("fixed_direct_actions:", fixed_direct_actions)
         print("returned_actions:", returned_actions)
+        mismatch_trace = self._build_coop_wait_mismatch_trace(state)
+        if mismatch_trace:
+            print("COOP_WAIT_MISMATCH_TRACE\n", json.dumps(mismatch_trace, ensure_ascii=False, indent=2))
+        empty_rack_trace = self._build_empty_rack_disappearance_trace(state)
+        if empty_rack_trace is not None:
+            print("EMPTY_RACK_DISAPPEARANCE_TRACE\n", json.dumps(empty_rack_trace, ensure_ascii=False, indent=2))
+
+    def _build_coop_wait_mismatch_trace(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        agents = self._sorted_agents(state)
+        pickers_by_id = {
+            int(agent["id"]): agent
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("type") == "PICKER"
+        }
+        request_frontier = {int(x) for x in self._fresh_request_rack_frontier(state)}
+        active_by_picker: dict[int, dict[str, Any]] = {}
+        for agv_id, assignment in self.active_assignments.items():
+            if not isinstance(assignment, dict):
+                continue
+            picker_id = self._safe_int(assignment.get("picker_id"))
+            if picker_id > 0:
+                active_by_picker[int(picker_id)] = {
+                    "agv_id": int(agv_id),
+                    **dict(assignment),
+                }
+
+        trace: list[dict[str, Any]] = []
+        for agent in agents:
+            if not isinstance(agent, dict) or agent.get("type") != "AGV":
+                continue
+            agv_id = int(agent["id"])
+            busy = bool(agent.get("busy", False))
+            carrying = bool(agent.get("carrying", False))
+            has_delivered = bool(agent.get("has_delivered", False))
+            target = int(agent.get("target", 0) or 0)
+            pos = self._coords_tuple(agent.get("coords_yx"))
+            target_coords = self._coords_tuple(agent.get("target_coords_yx"))
+            if not (busy and (not carrying) and (not has_delivered) and target > 0 and pos is not None and target_coords is not None and pos == target_coords):
+                continue
+
+            active_assignment = self.active_assignments.get(int(agv_id))
+            last_assignment = self._last_registered_assignment_by_agv.get(int(agv_id))
+            dropped_assignment = self._last_dropped_assignment_by_agv.get(int(agv_id))
+            assigned_picker_id = -1
+            if isinstance(active_assignment, dict):
+                assigned_picker_id = self._safe_int(active_assignment.get("picker_id"))
+            elif isinstance(last_assignment, dict) and self._safe_int(last_assignment.get("rack_id")) == target:
+                assigned_picker_id = self._safe_int(last_assignment.get("picker_id"))
+
+            picker_state = pickers_by_id.get(int(assigned_picker_id)) if assigned_picker_id > 0 else None
+            picker_target = self._safe_int(picker_state.get("target")) if isinstance(picker_state, dict) else 0
+            picker_same_cell = (
+                isinstance(picker_state, dict)
+                and self._coords_tuple(picker_state.get("coords_yx")) == pos
+            )
+            diagnosis = "waiting_for_picker_unknown"
+            if isinstance(picker_state, dict) and bool(picker_state.get("busy", False)) and picker_target == target:
+                diagnosis = "picker_inbound_to_same_rack"
+            elif isinstance(picker_state, dict) and bool(picker_state.get("busy", False)) and picker_target > 0 and picker_target != target:
+                diagnosis = "suspected_picker_reassigned_elsewhere"
+            elif not isinstance(active_assignment, dict):
+                diagnosis = "suspected_assignment_dropped_no_active_binding"
+            elif picker_same_cell:
+                diagnosis = "picker_on_same_cell_closure_should_happen"
+
+            trace.append(
+                {
+                    "agv_id": int(agv_id),
+                    "rack_id": int(target),
+                    "active_assignment": active_assignment,
+                    "last_registered_assignment": last_assignment,
+                    "last_dropped_assignment": dropped_assignment,
+                    "rack_in_request_frontier": bool(int(target) in request_frontier),
+                    "assigned_picker_id": int(assigned_picker_id) if assigned_picker_id > 0 else None,
+                    "assigned_picker_state": (
+                        {
+                            "busy": bool(picker_state.get("busy", False)),
+                            "target": int(picker_target),
+                            "coords_yx": picker_state.get("coords_yx"),
+                            "target_coords_yx": picker_state.get("target_coords_yx"),
+                        }
+                        if isinstance(picker_state, dict)
+                        else None
+                    ),
+                    "assigned_picker_active_assignment": (
+                        active_by_picker.get(int(assigned_picker_id))
+                        if assigned_picker_id > 0
+                        else None
+                    ),
+                    "diagnosis": diagnosis,
+                }
+            )
+        return trace
+
+    def _build_empty_rack_disappearance_trace(self, state: dict[str, Any]) -> Optional[dict[str, Any]]:
+        empty_racks_all = [int(x) for x in state.get("empty_rack_ids_all", state.get("empty_rack_ids_topk", []))]
+        if empty_racks_all:
+            return None
+
+        semantic = state.get("empty_rack_semantic_trace")
+        if not isinstance(semantic, dict):
+            return None
+
+        location_evaluations = semantic.get("location_evaluations", [])
+        blocked_by_reason: dict[str, int] = {}
+        blocked_hole_samples: list[dict[str, Any]] = []
+        for item in location_evaluations:
+            if not isinstance(item, dict):
+                continue
+            reasons = item.get("excluded_reasons", [])
+            if not isinstance(reasons, list):
+                reasons = []
+            for reason in reasons:
+                blocked_by_reason[str(reason)] = int(blocked_by_reason.get(str(reason), 0)) + 1
+            if "agv_on_cell_is_loading_or_noop_with_carried_shelf" in reasons and len(blocked_hole_samples) < 8:
+                blocked_hole_samples.append(
+                    {
+                        "location_id": self._safe_int(item.get("location_id")),
+                        "coords_yx": item.get("coords_yx"),
+                        "agv_id": self._safe_int(item.get("agv_layer_id")),
+                        "agv_req_action": item.get("agv_req_action"),
+                        "carried_shelf_layer_id": self._safe_int(item.get("carried_shelf_layer_id")),
+                    }
+                )
+
+        coords_to_loc_id: dict[tuple[int, int], int] = {}
+        for loc_id_str, coords_xy in state.get("location_coords_xy", {}).items():
+            if not isinstance(coords_xy, list) or len(coords_xy) != 2:
+                continue
+            try:
+                loc_id = int(loc_id_str)
+                x = int(coords_xy[0])
+                y = int(coords_xy[1])
+            except (TypeError, ValueError):
+                continue
+            coords_to_loc_id[(y, x)] = int(loc_id)
+
+        carrying_agv_contexts: list[dict[str, Any]] = []
+        for agent in self._sorted_agents(state):
+            if not isinstance(agent, dict) or agent.get("type") != "AGV":
+                continue
+            if not bool(agent.get("carrying", False)):
+                continue
+            coords_yx = self._coords_tuple(agent.get("coords_yx"))
+            current_loc_id = coords_to_loc_id.get(coords_yx) if coords_yx is not None else None
+            carrying_agv_contexts.append(
+                {
+                    "agv_id": self._safe_int(agent.get("id")),
+                    "busy": bool(agent.get("busy", False)),
+                    "has_delivered": bool(agent.get("has_delivered", False)),
+                    "target": self._safe_int(agent.get("target")),
+                    "coords_yx": agent.get("coords_yx"),
+                    "target_coords_yx": agent.get("target_coords_yx"),
+                    "current_loc_id": int(current_loc_id) if current_loc_id is not None else None,
+                    "at_target": (
+                        coords_yx is not None
+                        and coords_yx == self._coords_tuple(agent.get("target_coords_yx"))
+                    ),
+                }
+            )
+
+        return {
+            "step": int(self.step_counter),
+            "total_empty_racks_in_environment": 0,
+            "request_queue_shelf_count": len(semantic.get("request_queue_shelf_ids", [])),
+            "carried_shelf_count": len(semantic.get("carried_shelf_ids", [])),
+            "blocked_reason_counts": blocked_by_reason,
+            "blocked_hole_samples": blocked_hole_samples,
+            "carrying_agv_contexts": carrying_agv_contexts,
+        }
+
+    def _has_live_cooperative_context(self, state: dict[str, Any], agv_state: dict[str, Any]) -> bool:
+        """Return whether the AGV still has a live same-rack cooperative context."""
+        if not isinstance(agv_state, dict) or agv_state.get("type") != "AGV":
+            return False
+
+        agv_id = self._safe_int(agv_state.get("id"))
+        target = self._safe_int(agv_state.get("target"))
+        if agv_id <= 0 or target <= 0:
+            return False
+
+        carrying = bool(agv_state.get("carrying", False))
+        has_delivered = bool(agv_state.get("has_delivered", False))
+        expected_purpose: Optional[str] = None
+        if (not carrying) and (not has_delivered):
+            expected_purpose = "LOAD"
+        elif carrying and has_delivered:
+            expected_purpose = "UNLOAD"
+        if expected_purpose is None:
+            return False
+
+        assignment = self.active_assignments.get(int(agv_id))
+        if not (
+            isinstance(assignment, dict)
+            and str(assignment.get("purpose", "")).upper() == expected_purpose
+            and self._safe_int(assignment.get("rack_id")) == int(target)
+        ):
+            assignment = self._last_registered_assignment_by_agv.get(int(agv_id))
+            if not (
+                isinstance(assignment, dict)
+                and str(assignment.get("purpose", "")).upper() == expected_purpose
+                and self._safe_int(assignment.get("rack_id")) == int(target)
+            ):
+                return False
+
+        picker_id = self._safe_int(assignment.get("picker_id"))
+        if picker_id <= 0:
+            return False
+
+        agents = self._sorted_agents(state)
+        picker_state = next(
+            (
+                agent
+                for agent in agents
+                if isinstance(agent, dict)
+                and agent.get("type") == "PICKER"
+                and self._safe_int(agent.get("id")) == int(picker_id)
+            ),
+            None,
+        )
+        if not isinstance(picker_state, dict):
+            return False
+
+        picker_target = self._safe_int(picker_state.get("target"))
+        if bool(picker_state.get("busy", False)) and int(picker_target) == int(target):
+            return True
+
+        agv_pos = self._coords_tuple(agv_state.get("coords_yx"))
+        picker_pos = self._coords_tuple(picker_state.get("coords_yx"))
+        if agv_pos is not None and picker_pos is not None and agv_pos == picker_pos:
+            return True
+
+        return False
 
     def _is_assignment_completed(self, agv_state: dict[str, Any], assignment: dict[str, Any]) -> bool:
         purpose = str(assignment.get("purpose", ""))
@@ -1020,6 +1460,64 @@ class SymbioticCommLLMPlanner:
             return not carrying
         return True
 
+    def _matching_assignment_for_context(
+        self,
+        agv_state: dict[str, Any],
+        assignment: Optional[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        """Return assignment only when it still matches the AGV's current cooperative context."""
+        if not isinstance(assignment, dict):
+            return None
+        purpose = self._cooperative_purpose_for_agv(agv_state)
+        target = self._safe_int(agv_state.get("target"))
+        if purpose is None or target <= 0:
+            return None
+        if str(assignment.get("purpose", "")).upper() != str(purpose).upper():
+            return None
+        if self._safe_int(assignment.get("rack_id")) != int(target):
+            return None
+        if self._safe_int(assignment.get("picker_id")) <= 0:
+            return None
+        return assignment
+
+    def _preferred_picker_for_context(
+        self,
+        state: dict[str, Any],
+        agv_id: int,
+        rack_id: int,
+        purpose: str,
+    ) -> int:
+        """Return the most trusted picker bound to the current AGV/rack/purpose context."""
+        agents = self._sorted_agents(state)
+        agv_state = next(
+            (
+                agent
+                for agent in agents
+                if isinstance(agent, dict)
+                and agent.get("type") == "AGV"
+                and self._safe_int(agent.get("id")) == int(agv_id)
+            ),
+            None,
+        )
+        if not isinstance(agv_state, dict):
+            return -1
+
+        candidates = [
+            self.active_assignments.get(int(agv_id)),
+            self._last_registered_assignment_by_agv.get(int(agv_id)),
+        ]
+        for assignment in candidates:
+            if not isinstance(assignment, dict):
+                continue
+            if str(assignment.get("purpose", "")).upper() != str(purpose).upper():
+                continue
+            if self._safe_int(assignment.get("rack_id")) != int(rack_id):
+                continue
+            picker_id = self._safe_int(assignment.get("picker_id"))
+            if picker_id > 0:
+                return int(picker_id)
+        return -1
+
     def _update_active_assignments_from_state(self, state: dict[str, Any]) -> None:
         """Keep only assignments that still match the AGV state."""
         agents = self._sorted_agents(state)
@@ -1028,12 +1526,31 @@ class SymbioticCommLLMPlanner:
         for agv_id, assignment in self.active_assignments.items():
             agv_state = agvs_by_id.get(int(agv_id))
             if agv_state is None:
+                self._last_dropped_assignment_by_agv[int(agv_id)] = {
+                    **dict(assignment),
+                    "drop_reason": "agv_missing",
+                    "drop_step": int(self.step_counter),
+                }
                 continue
             if self._is_assignment_completed(agv_state, assignment):
+                self._last_dropped_assignment_by_agv[int(agv_id)] = {
+                    **dict(assignment),
+                    "drop_reason": "completed",
+                    "drop_step": int(self.step_counter),
+                }
+                continue
+            if self._matching_assignment_for_context(agv_state, assignment) is not None:
+                new_active[int(agv_id)] = dict(assignment)
                 continue
             current_target = int(agv_state.get("target", 0) or 0)
             rack_id = int(assignment.get("rack_id", 0))
             if current_target not in {0, rack_id}:
+                self._last_dropped_assignment_by_agv[int(agv_id)] = {
+                    **dict(assignment),
+                    "drop_reason": "target_mismatch",
+                    "drop_step": int(self.step_counter),
+                    "current_target": int(current_target),
+                }
                 continue
             new_active[int(agv_id)] = assignment
         self.active_assignments = new_active
@@ -1058,6 +1575,25 @@ class SymbioticCommLLMPlanner:
             purpose = self._cooperative_purpose_for_agv(agv_state)
             if purpose is None:
                 continue
+            current_target = int(agv_state.get("target", 0) or 0)
+            if bool(agv_state.get("busy", False)) and current_target > 0 and int(rack_id) != int(current_target):
+                if self.config.debug:
+                    print(
+                        "RECOVERY_ASSIGNMENT_SKIPPED_TARGET_MISMATCH\n",
+                        json.dumps(
+                            {
+                                "step": int(self.step_counter),
+                                "agv_id": int(agv_id),
+                                "picker_id": int(picker_id),
+                                "assignment_rack_id": int(rack_id),
+                                "current_target": int(current_target),
+                                "purpose": str(purpose),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    )
+                continue
 
             existing = new_active.get(int(agv_id))
             if (
@@ -1074,6 +1610,12 @@ class SymbioticCommLLMPlanner:
                 "purpose": purpose,
                 "start_step": self.step_counter,
             }
+            self._last_registered_assignment_by_agv[int(agv_id)] = {
+                "picker_id": int(picker_id),
+                "rack_id": int(rack_id),
+                "purpose": str(purpose),
+                "start_step": int(self.step_counter),
+            }
 
         self.active_assignments = new_active
 
@@ -1086,54 +1628,307 @@ class SymbioticCommLLMPlanner:
             return "UNLOAD"
         return None
 
+    def _protected_picker_bindings_for_waiting_agvs(self, state: dict[str, Any]) -> dict[int, int]:
+        """Return AGV->picker bindings that should be preserved for ongoing cooperative execution."""
+        agents = self._sorted_agents(state)
+        bindings: dict[int, int] = {}
+        for agent in agents:
+            if not isinstance(agent, dict) or agent.get("type") != "AGV":
+                continue
+            agv_id = int(agent.get("id", 0) or 0)
+            if agv_id <= 0:
+                continue
+            busy = bool(agent.get("busy", False))
+            carrying = bool(agent.get("carrying", False))
+            has_delivered = bool(agent.get("has_delivered", False))
+            target = int(agent.get("target", 0) or 0)
+            if not busy or target <= 0:
+                continue
+
+            expected_purpose: Optional[str] = None
+            if (not carrying) and (not has_delivered):
+                expected_purpose = "LOAD"
+            elif carrying and has_delivered:
+                expected_purpose = "UNLOAD"
+            if expected_purpose is None:
+                continue
+
+            picker_id = -1
+            active_assignment = self.active_assignments.get(int(agv_id))
+            if (
+                isinstance(active_assignment, dict)
+                and str(active_assignment.get("purpose", "")).upper() == expected_purpose
+                and self._safe_int(active_assignment.get("rack_id")) == target
+            ):
+                picker_id = self._safe_int(active_assignment.get("picker_id"))
+            else:
+                last_assignment = self._last_registered_assignment_by_agv.get(int(agv_id))
+                if (
+                    isinstance(last_assignment, dict)
+                    and str(last_assignment.get("purpose", "")).upper() == expected_purpose
+                    and self._safe_int(last_assignment.get("rack_id")) == target
+                ):
+                    picker_id = self._safe_int(last_assignment.get("picker_id"))
+
+            if picker_id > 0:
+                bindings[int(agv_id)] = int(picker_id)
+        return bindings
+
     # ----------------------------
     # Batch request building
     # ----------------------------
 
-    def _build_batch_requests(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        """Deterministically build cooperative AGV requests for this step."""
+    def _active_claimed_rack_ids(self) -> set[int]:
+        """Rack ids already claimed by active cooperative assignments."""
+        return {
+            int(assignment.get("rack_id", -1))
+            for assignment in self.active_assignments.values()
+            if isinstance(assignment, dict) and self._safe_int(assignment.get("rack_id")) > 0
+        }
+
+    def _fresh_request_rack_frontier(self, state: dict[str, Any]) -> list[int]:
+        """Recompute the current open-request top-k frontier after excluding claimed racks."""
+        request_racks_all = [
+            int(x)
+            for x in state.get("requests_rack_ids_all", state.get("requests_rack_ids_topk", []))
+            if self._safe_int(x) > 0
+        ]
+        claimed_rack_ids = self._active_claimed_rack_ids()
+        open_request_racks = [
+            int(rack_id)
+            for rack_id in request_racks_all
+            if int(rack_id) not in claimed_rack_ids
+        ]
+        request_limit = len([int(x) for x in state.get("requests_rack_ids_topk", []) if self._safe_int(x) > 0])
+        if request_limit <= 0 or len(open_request_racks) <= request_limit:
+            return open_request_racks
+
         agents = self._sorted_agents(state)
-        req_racks = [int(x) for x in state.get("requests_rack_ids_topk", [])]
+        agv_coords = [
+            self._normalize_coords_yx(agent.get("coords_yx"))
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("type") == "AGV"
+        ]
+        agv_coords = [coords for coords in agv_coords if coords is not None]
+        if not agv_coords:
+            return open_request_racks[:request_limit]
+
+        location_coords_xy = state.get("location_coords_xy", {})
+
+        def sort_key(rack_id: int) -> tuple[int, int]:
+            coords_xy = location_coords_xy.get(str(int(rack_id)))
+            rack_coords = self._normalize_coords_xy(coords_xy)
+            if rack_coords is None:
+                return 10**9, int(rack_id)
+            min_distance = min(
+                abs(int(coords[0]) - int(rack_coords[0])) + abs(int(coords[1]) - int(rack_coords[1]))
+                for coords in agv_coords
+            )
+            return int(min_distance), int(rack_id)
+
+        return sorted(open_request_racks, key=sort_key)[:request_limit]
+
+    def _build_recovery_candidate_pool(
+        self,
+        state: dict[str, Any],
+        agv_id: int,
+        base_racks: list[int],
+    ) -> list[int]:
+        """Build an AGV-specific recovery candidate pool from the current rack frontier."""
+        agents = self._sorted_agents(state)
+        agv_index_by_id = {
+            int(agent["id"]): idx
+            for idx, agent in enumerate(agents)
+            if isinstance(agent, dict) and agent.get("type") == "AGV"
+        }
+        agent_index = agv_index_by_id.get(int(agv_id), -1)
+        if agent_index < 0:
+            return []
+
+        valid_action_masks = state.get("valid_action_masks", [])
+        cost_map = self._agent_cost_map(state, "agv", int(agv_id))
+        candidate_costs: list[tuple[int, int]] = []
+        for rack_id in base_racks:
+            rack_id = int(rack_id)
+            if not self._is_valid_action(valid_action_masks, agent_index, rack_id):
+                continue
+            eta = self._safe_cost(cost_map, rack_id)
+            if eta is None:
+                continue
+            candidate_costs.append((int(rack_id), int(eta)))
+
+        candidate_costs.sort(key=lambda item: (int(item[1]), int(item[0])))
+        return [int(rack_id) for rack_id, _ in candidate_costs]
+
+    def _anchored_recovery_target(
+        self,
+        state: dict[str, Any],
+        agv_state: dict[str, Any],
+        purpose: str,
+    ) -> Optional[int]:
+        """Return the current target when recovery must stay anchored to it."""
+        busy = bool(agv_state.get("busy", False))
+        target = int(agv_state.get("target", 0) or 0)
+        pos = self._coords_tuple(agv_state.get("coords_yx"))
+        target_coords = self._coords_tuple(agv_state.get("target_coords_yx"))
+        if not (busy and target > 0 and pos is not None and target_coords is not None and pos == target_coords):
+            return None
+
+        carrying = bool(agv_state.get("carrying", False))
+        has_delivered = bool(agv_state.get("has_delivered", False))
+        purpose = str(purpose).upper()
+
+        if purpose == "LOAD" and (not carrying) and (not has_delivered):
+            request_racks_all = {
+                int(x)
+                for x in state.get("requests_rack_ids_all", state.get("requests_rack_ids_topk", []))
+                if self._safe_int(x) > 0
+            }
+            if int(target) in request_racks_all:
+                return int(target)
+
+        if purpose == "UNLOAD" and carrying and has_delivered:
+            empty_racks = {
+                int(x)
+                for x in state.get("empty_rack_ids_topk", [])
+                if self._safe_int(x) > 0
+            }
+            if int(target) in empty_racks:
+                return int(target)
+
+        return None
+
+    def _build_batch_request_trace(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build batch requests plus per-AGV exclusion diagnostics."""
+        agents = self._sorted_agents(state)
+        req_racks = self._fresh_request_rack_frontier(state)
         empty_racks = [int(x) for x in state.get("empty_rack_ids_topk", [])]
+        recovery_agv_ids = {
+            int(agv_id)
+            for agv_id in self.current_recovery_request_agv_ids
+            if int(agv_id) > 0
+        }
 
         requests: list[dict[str, Any]] = []
+        exclusion_trace: list[dict[str, Any]] = []
         for a in agents:
             if a.get("type") != "AGV":
                 continue
-            if bool(a.get("busy", False)):
-                continue
-            target = int(a.get("target", 0) or 0)
-            if target != 0:
-                continue
 
             agv_id = int(a["id"])
+            is_recovery_request = int(agv_id) in recovery_agv_ids
+            trace_entry: dict[str, Any] = {
+                "agv_id": int(agv_id),
+                "busy": bool(a.get("busy", False)),
+                "carrying": bool(a.get("carrying", False)),
+                "has_delivered": bool(a.get("has_delivered", False)),
+                "target": int(a.get("target", 0) or 0),
+                "is_recovery_request": bool(is_recovery_request),
+                "active_assignment_present": isinstance(self.active_assignments.get(int(agv_id)), dict),
+                "excluded_reasons": [],
+            }
+            if not is_recovery_request:
+                if bool(a.get("busy", False)):
+                    trace_entry["excluded_reasons"].append("excluded_because_busy")
+                    exclusion_trace.append(trace_entry)
+                    continue
+                target = int(a.get("target", 0) or 0)
+                if target != 0:
+                    trace_entry["excluded_reasons"].append("excluded_because_target_nonzero")
+                    exclusion_trace.append(trace_entry)
+                    continue
+
             carrying = bool(a.get("carrying", False))
             has_delivered = bool(a.get("has_delivered", False))
 
-            # carrying and not delivered -> fixed goal move, not cooperative request
-            if carrying and (not has_delivered):
-                continue
+            assignment = self.active_assignments.get(int(agv_id))
+            assignment_purpose = None
+            if isinstance(assignment, dict):
+                raw_purpose = str(assignment.get("purpose", "")).upper()
+                if raw_purpose in {"LOAD", "UNLOAD"}:
+                    assignment_purpose = raw_purpose
 
-            if carrying and has_delivered:
+            if is_recovery_request and assignment_purpose in {"LOAD", "UNLOAD"}:
+                purpose = str(assignment_purpose)
+            elif carrying and has_delivered:
                 purpose = "UNLOAD"
-                pool = empty_racks
+            elif carrying and (not has_delivered):
+                # carrying and not delivered -> fixed goal move, not cooperative request
+                trace_entry["excluded_reasons"].append("excluded_because_carrying_state_purpose_logic_blocked")
+                exclusion_trace.append(trace_entry)
+                continue
             else:
                 purpose = "LOAD"
+            trace_entry["purpose"] = str(purpose)
+
+            anchored_target = None
+            if is_recovery_request:
+                anchored_target = self._anchored_recovery_target(state, a, purpose)
+                if anchored_target is not None:
+                    pool = [int(anchored_target)]
+                    trace_entry["anchored_recovery_target"] = int(anchored_target)
+                elif purpose == "UNLOAD":
+                    pool = empty_racks
+                    if not pool:
+                        trace_entry["excluded_reasons"].append("excluded_because_no_empty_rack_candidates")
+                else:
+                    pool = req_racks
+            elif purpose == "UNLOAD":
+                pool = empty_racks
+                if not pool:
+                    trace_entry["excluded_reasons"].append("excluded_because_no_empty_rack_candidates")
+            else:
                 pool = req_racks
 
+            if is_recovery_request:
+                if anchored_target is None:
+                    pool = self._build_recovery_candidate_pool(state, agv_id, pool)
+                trace_entry["recovery_candidate_pool_size"] = int(len(pool))
+
             if not pool:
+                if "excluded_because_no_empty_rack_candidates" not in trace_entry["excluded_reasons"]:
+                    trace_entry["excluded_reasons"].append("excluded_because_no_valid_candidate_pool")
+                exclusion_trace.append(trace_entry)
                 continue
 
-            request_id = f"agv-{agv_id}-{purpose.lower()}"
+            if is_recovery_request:
+                request_id = f"agv-{agv_id}-{purpose.lower()}-recovery"
+            else:
+                request_id = f"agv-{agv_id}-{purpose.lower()}"
             requests.append(
                 {
                     "request_id": request_id,
                     "agv_id": agv_id,
                     "purpose": purpose,
                     "candidate_pool": pool,
+                    "is_recovery_request": bool(is_recovery_request),
+                    "anchored_recovery_target": int(anchored_target) if anchored_target is not None else None,
+                    "preferred_picker_id": int(self._preferred_picker_for_context(state, agv_id, pool[0] if len(pool) == 1 else int(anchored_target or 0), purpose))
+                    if is_recovery_request and len(pool) == 1
+                    else None,
                 }
             )
+            trace_entry["request_id"] = str(request_id)
+            trace_entry["candidate_pool_size"] = int(len(pool))
+            exclusion_trace.append(trace_entry)
 
+        return requests, exclusion_trace
+
+    def _build_batch_requests(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        """Deterministically build cooperative AGV requests for this step."""
+        requests, exclusion_trace = self._build_batch_request_trace(state)
+        if (
+            self.config.debug
+            and not requests
+            and any(
+                isinstance(agent, dict) and agent.get("type") == "AGV" and bool(agent.get("busy", False))
+                for agent in self._sorted_agents(state)
+            )
+        ):
+            pass
         return requests
 
     def _chunk_requests(self, requests: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str, Any]]]:
@@ -1281,10 +2076,39 @@ class SymbioticCommLLMPlanner:
     # Stage 1 payload + sanitize
     # ----------------------------
 
-    def _build_stage1_payload(self, state: dict[str, Any], batch_requests: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_stage1_payload(
+        self,
+        state: dict[str, Any],
+        batch_requests: list[dict[str, Any]],
+        reserved_agv_ids: set[int] | None = None,
+        reserved_picker_ids: set[int] | None = None,
+    ) -> dict[str, Any]:
+        reserved_agv_ids = set() if reserved_agv_ids is None else {int(x) for x in reserved_agv_ids}
+        reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
         agents = self._sorted_agents(state)
-        idle_agvs = sum(1 for a in agents if a.get("type") == "AGV" and not bool(a.get("busy", False)))
-        idle_pickers = sum(1 for a in agents if a.get("type") == "PICKER" and not bool(a.get("busy", False)))
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
+        idle_agvs = sum(
+            1
+            for a in agents
+            if a.get("type") == "AGV"
+            and not bool(a.get("busy", False))
+            and int(a["id"]) not in reserved_agv_ids
+        )
+        active_reserved_picker_ids = {
+            int(assignment.get("picker_id", -1))
+            for assignment in self.active_assignments.values()
+            if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
+        }
+        idle_pickers = sum(
+            1
+            for a in agents
+            if a.get("type") == "PICKER"
+            and not bool(a.get("busy", False))
+            and int(a["id"]) not in active_reserved_picker_ids
+            and int(a["id"]) not in protected_picker_ids
+            and int(a["id"]) not in reserved_picker_ids
+        )
         picker_scarcity = "low" if idle_pickers >= 2 else "high"
 
         # 计算区域负载
@@ -1301,14 +2125,46 @@ class SymbioticCommLLMPlanner:
         for req in batch_requests:
             agv_id = int(req["agv_id"])
             pool = [int(x) for x in req["candidate_pool"]]
+            anchored_recovery_target = self._safe_int(req.get("anchored_recovery_target"))
             cost_map = self._agent_cost_map(state, "agv", agv_id)
             agent_index = agv_index_by_id.get(agv_id, -1)
+            agv_state = next(
+                (
+                    agent
+                    for agent in agents
+                    if isinstance(agent, dict)
+                    and agent.get("type") == "AGV"
+                    and int(agent.get("id", 0) or 0) == int(agv_id)
+                ),
+                None,
+            )
+            current_target = self._safe_int(agv_state.get("target")) if isinstance(agv_state, dict) else 0
+            pos = self._coords_tuple(agv_state.get("coords_yx")) if isinstance(agv_state, dict) else None
+            target_coords = self._coords_tuple(agv_state.get("target_coords_yx")) if isinstance(agv_state, dict) else None
+            at_target = (
+                isinstance(agv_state, dict)
+                and bool(agv_state.get("busy", False))
+                and current_target > 0
+                and pos is not None
+                and target_coords is not None
+                and pos == target_coords
+            )
 
             scored: list[tuple[int, int]] = []
             for rack_id in pool:
-                if agent_index >= 0 and not self._is_valid_action(valid_masks, agent_index, rack_id):
+                is_anchored_recovery_candidate = (
+                    anchored_recovery_target > 0
+                    and int(rack_id) == int(anchored_recovery_target)
+                )
+                if (
+                    agent_index >= 0
+                    and not is_anchored_recovery_candidate
+                    and not self._is_valid_action(valid_masks, agent_index, rack_id)
+                ):
                     continue
                 eta = self._safe_cost(cost_map, rack_id)
+                if eta is None and is_anchored_recovery_candidate and at_target and int(rack_id) == int(current_target):
+                    eta = 0
                 if eta is None:
                     continue
                 scored.append((rack_id, int(eta)))
@@ -1403,6 +2259,9 @@ class SymbioticCommLLMPlanner:
                     "agv_id": int(item.get("agv_id", 0)),
                     "purpose": str(item.get("purpose", "")),
                     "candidates": cands,
+                    "is_recovery_request": bool(item.get("is_recovery_request", False)),
+                    "anchored_recovery_target": self._safe_int(item.get("anchored_recovery_target")),
+                    "preferred_picker_id": self._safe_int(item.get("preferred_picker_id")),
                 }
 
         seen: set[str] = set()
@@ -1454,6 +2313,9 @@ class SymbioticCommLLMPlanner:
                     "primary_rack_id": int(primary),
                     "backup_rack_ids": backups,
                     "candidates": meta["candidates"],  # keep minimal for later building
+                    "is_recovery_request": bool(meta.get("is_recovery_request", False)),
+                    "anchored_recovery_target": self._safe_int(meta.get("anchored_recovery_target")),
+                    "preferred_picker_id": self._safe_int(meta.get("preferred_picker_id")),
                 }
             )
             if self.enable_rationale:
@@ -1488,6 +2350,8 @@ class SymbioticCommLLMPlanner:
         idle_agvs = sum(1 for a in agents if a.get("type") == "AGV" and not bool(a.get("busy", False)))
         reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
         reserved_rack_ids = set() if reserved_rack_ids is None else {int(x) for x in reserved_rack_ids}
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
         # Reserve pickers already committed to active cooperative assignments so
         # an unfinished unload/load does not lose its paired picker mid-execution.
         active_reserved_picker_ids = {
@@ -1501,6 +2365,7 @@ class SymbioticCommLLMPlanner:
             if a.get("type") == "PICKER"
             and not bool(a.get("busy", False))
             and int(a["id"]) not in active_reserved_picker_ids
+            and int(a["id"]) not in protected_picker_ids
             and int(a["id"]) not in reserved_picker_ids
         ]
         idle_pickers = len(available_pickers)
@@ -1511,6 +2376,9 @@ class SymbioticCommLLMPlanner:
             request_id = str(req["request_id"])
             agv_id = int(req["agv_id"])
             purpose = str(req["purpose"])
+            protected_picker_id_for_request = int(protected_picker_bindings.get(int(agv_id), -1))
+            preferred_picker_id_for_request = self._safe_int(req.get("preferred_picker_id"))
+            is_recovery_request = bool(req.get("is_recovery_request", False))
             selected_rack_ids: list[int] = []
             primary_rack_id = self._safe_int(req.get("primary_rack_id"))
             if primary_rack_id > 0:
@@ -1539,7 +2407,52 @@ class SymbioticCommLLMPlanner:
                     continue
 
                 rack_pairs: list[dict[str, Any]] = []
-                for p in available_pickers:
+                candidate_pickers = list(available_pickers)
+                preferred_picker_state = None
+                if preferred_picker_id_for_request > 0:
+                    preferred_picker_state = next(
+                        (
+                            agent
+                            for agent in agents
+                            if agent.get("type") == "PICKER"
+                            and int(agent.get("id", 0) or 0) == int(preferred_picker_id_for_request)
+                            and not bool(agent.get("busy", False))
+                            and int(agent.get("id", 0) or 0) not in reserved_picker_ids
+                        ),
+                        None,
+                    )
+                    if preferred_picker_state is not None:
+                        candidate_pickers = [
+                            agent
+                            for agent in candidate_pickers
+                            if int(agent.get("id", 0) or 0) != int(preferred_picker_id_for_request)
+                        ]
+                        candidate_pickers.insert(0, preferred_picker_state)
+                if protected_picker_id_for_request > 0:
+                    protected_picker_state = next(
+                        (
+                            agent
+                            for agent in agents
+                            if agent.get("type") == "PICKER"
+                            and int(agent.get("id", 0) or 0) == int(protected_picker_id_for_request)
+                            and not bool(agent.get("busy", False))
+                            and int(agent.get("id", 0) or 0) not in reserved_picker_ids
+                        ),
+                        None,
+                    )
+                    if protected_picker_state is not None and all(
+                        int(existing.get("id", 0) or 0) != int(protected_picker_id_for_request)
+                        for existing in candidate_pickers
+                    ):
+                        candidate_pickers.append(protected_picker_state)
+                if is_recovery_request and preferred_picker_state is not None:
+                    candidate_pickers = [
+                        agent
+                        for agent in candidate_pickers
+                        if int(agent.get("id", 0) or 0) == int(preferred_picker_id_for_request)
+                    ]
+
+                for p in candidate_pickers:
                     pid = int(p["id"])
                     eta_picker = self._safe_cost(self._agent_cost_map(state, "picker", pid), rack_id)
                     if eta_picker is None:
@@ -2222,6 +3135,11 @@ class SymbioticCommLLMPlanner:
         actions = [0] * max(0, num_agents)
 
         fixed = self._build_fixed_direct_actions(state)
+        recovery_override_agv_ids = {
+            int(agv_id)
+            for agv_id in self.current_recovery_request_agv_ids
+            if self._safe_int(agv_id) > 0
+        }
         for agent_id, loc_id in fixed.items():
             if 1 <= int(agent_id) <= num_agents:
                 actions[int(agent_id) - 1] = int(loc_id)
@@ -2234,7 +3152,8 @@ class SymbioticCommLLMPlanner:
             rack_id = self._safe_int(item.get("rack_id"))
             if agv_id <= 0 or picker_id <= 0 or rack_id <= 0:
                 continue
-            if agv_id in fixed:
+            # Recovery-selected AGVs must be able to override the default busy->0 action.
+            if agv_id in fixed and agv_id not in recovery_override_agv_ids:
                 continue
             if picker_id in fixed:
                 continue
@@ -2262,8 +3181,9 @@ class SymbioticCommLLMPlanner:
         if self.config.debug:
             print("WHOLE_PLAN_FALLBACK:", reason)
 
-        # P1: reset internal state related to triggering
-        self.active_assignments.clear()
+        # Preserve still-valid cooperative contexts; fallback should not silently
+        # drop AGV-picker bindings that the environment is still executing.
+        self._update_active_assignments_from_state(state)
         self.last_communication_step = self.step_counter
 
         # Use a fresh instance to avoid hidden coupling

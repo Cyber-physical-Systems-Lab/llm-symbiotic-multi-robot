@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from tarware.definitions import Action, CollisionLayers
 
 
 @dataclass(slots=True)
@@ -40,6 +41,27 @@ class StateBuilder:
 
         request_ids = self._select_closest_ids(env, agvs, request_ids_all, self.config.topk_requests)
         empty_ids = self._select_closest_ids(env, agvs, empty_ids_all, self.config.topk_empty)
+        empty_rack_pool_trace = {
+            "total_empty_racks_in_environment": int(len(empty_ids_all)),
+            "topk_limit": int(self.config.topk_empty),
+            "selected_empty_racks": int(len(empty_ids)),
+            "reason": (
+                "no_empty_racks_exist_in_environment"
+                if not empty_ids_all
+                else "all_empty_racks_filtered_by_topk_construction_logic"
+                if not empty_ids
+                else "topk_truncated"
+                if len(empty_ids) < len(empty_ids_all)
+                else "available"
+            ),
+        }
+        empty_rack_semantic_trace = None
+        if not empty_ids_all:
+            empty_rack_semantic_trace = self._build_empty_rack_semantic_trace(
+                env=env,
+                empty_ids_all=empty_ids_all,
+                empty_ids_topk=empty_ids,
+            )
         candidate_loc_ids = self._ordered_union(request_ids, empty_ids, goal_ids)
         cost_table = self._build_cost_table(env, agvs, pickers, candidate_loc_ids)
         valid_action_masks = self._valid_action_masks(env)
@@ -56,9 +78,13 @@ class StateBuilder:
                 "num_goals": int(len(goals_all)),
             },
             "agents": [self._serialize_agent(env, agent) for agent in agents_sorted],
+            "requests_rack_ids_all": [int(loc_id) for loc_id in request_ids_all],
+            "empty_rack_ids_all": [int(loc_id) for loc_id in empty_ids_all],
             "goal_ids": [int(loc_id) for loc_id in goal_ids],
             "requests_rack_ids_topk": [int(loc_id) for loc_id in request_ids],
             "empty_rack_ids_topk": [int(loc_id) for loc_id in empty_ids],
+            "empty_rack_pool_trace": empty_rack_pool_trace,
+            "empty_rack_semantic_trace": empty_rack_semantic_trace,
             "valid_action_masks": valid_action_masks,
             "cost_table": cost_table,
             "rack_to_region": rack_to_region,
@@ -140,6 +166,81 @@ class StateBuilder:
             return min_distance, loc_id
 
         return sorted(loc_ids, key=sort_key)[:limit]
+
+    def _build_empty_rack_semantic_trace(
+        self,
+        env: Any,
+        empty_ids_all: list[int],
+        empty_ids_topk: list[int],
+    ) -> dict[str, Any]:
+        goal_set = {(int(x), int(y)) for x, y in env.goals}
+        carried_shelf_ids = sorted(
+            int(agent.carrying_shelf.id)
+            for agent in env.agents
+            if getattr(agent, "carrying_shelf", None) is not None
+        )
+        request_queue_ids = sorted(int(shelf.id) for shelf in getattr(env, "request_queue", []))
+        all_shelf_ids = sorted(int(shelf.id) for shelf in getattr(env, "shelfs", []))
+        location_evaluations: list[dict[str, Any]] = []
+        env_empty_indicator = np.asarray(env.get_empty_shelf_information()).astype(int).tolist()
+
+        for loc_id, coords in env.action_id_to_coords_map.items():
+            y = int(coords[0])
+            x = int(coords[1])
+            loc_id = int(loc_id)
+            if (x, y) in goal_set:
+                continue
+
+            shelf_layer_id = int(env.grid[CollisionLayers.SHELVES, y, x])
+            carried_shelf_layer_id = int(env.grid[CollisionLayers.CARRIED_SHELVES, y, x])
+            agv_layer_id = int(env.grid[CollisionLayers.AGVS, y, x])
+            agv_req_action = None
+            if agv_layer_id > 0:
+                try:
+                    agv_req_action = getattr(env.agents[agv_layer_id - 1].req_action, "name", None)
+                except Exception:
+                    agv_req_action = None
+
+            env_marks_empty = False
+            exclusion_reasons: list[str] = []
+            if shelf_layer_id != 0:
+                exclusion_reasons.append("occupied_by_shelf_layer")
+            if carried_shelf_layer_id != 0:
+                if agv_layer_id <= 0:
+                    exclusion_reasons.append("occupied_by_carried_shelf_layer_without_agv")
+                elif agv_req_action in {Action.NOOP.name, Action.TOGGLE_LOAD.name}:
+                    exclusion_reasons.append("agv_on_cell_is_loading_or_noop_with_carried_shelf")
+            if shelf_layer_id == 0 and (
+                carried_shelf_layer_id == 0
+                or (agv_layer_id > 0 and agv_req_action not in {Action.NOOP.name, Action.TOGGLE_LOAD.name})
+            ):
+                env_marks_empty = True
+            if env_marks_empty:
+                exclusion_reasons = []
+
+            location_evaluations.append(
+                {
+                    "location_id": int(loc_id),
+                    "coords_yx": [int(y), int(x)],
+                    "shelf_layer_id": int(shelf_layer_id),
+                    "carried_shelf_layer_id": int(carried_shelf_layer_id),
+                    "agv_layer_id": int(agv_layer_id),
+                    "agv_req_action": agv_req_action,
+                    "environment_marks_empty": bool(env_marks_empty),
+                    "excluded_reasons": exclusion_reasons,
+                }
+            )
+
+        return {
+            "all_shelf_ids_known_to_environment": all_shelf_ids,
+            "request_queue_shelf_ids": request_queue_ids,
+            "carried_shelf_ids": carried_shelf_ids,
+            "goal_coords_xy": [[int(x), int(y)] for x, y in sorted(goal_set)],
+            "empty_rack_ids_all": [int(x) for x in empty_ids_all],
+            "empty_rack_ids_topk": [int(x) for x in empty_ids_topk],
+            "raw_empty_indicator": env_empty_indicator,
+            "location_evaluations": location_evaluations,
+        }
 
     def _build_cost_table(
         self,
