@@ -456,6 +456,50 @@ def _extract_objective_scores(comm_final_plan: dict[str, Any]) -> dict[str, Any]
     return scores
 
 
+def _extract_agv_carrying_by_id(state_min: Any) -> dict[int, bool]:
+    """Extract AGV carrying flags from the recorded compact state."""
+    if not isinstance(state_min, dict):
+        return {}
+    agents = state_min.get("agents", [])
+    if not isinstance(agents, list):
+        return {}
+
+    carrying_by_agv: dict[int, bool] = {}
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        if str(agent.get("type", "")).upper() != "AGV":
+            continue
+        agv_id = _safe_int(agent.get("id"))
+        if agv_id <= 0:
+            continue
+        carrying_by_agv[int(agv_id)] = bool(agent.get("carrying", False))
+    return carrying_by_agv
+
+
+def _extract_request_purpose_map(comm_request: Any) -> dict[str, str]:
+    """Map request_id to purpose using the recorded communication request payload."""
+    payload = _unwrap_message(comm_request)
+    requests = payload.get("requests", [])
+    if not isinstance(requests, list):
+        return {}
+
+    purpose_by_request: dict[str, str] = {}
+    for item in requests:
+        if not isinstance(item, dict):
+            continue
+        request_id = item.get("request_id")
+        if not isinstance(request_id, str):
+            continue
+        purpose = item.get("purpose")
+        if purpose is None:
+            continue
+        purpose_text = str(purpose).upper()
+        if purpose_text in {"LOAD", "UNLOAD"}:
+            purpose_by_request[request_id] = purpose_text
+    return purpose_by_request
+
+
 def _normalize_stage2_status(item: dict[str, Any]) -> str:
     status = str(item.get("status", "BUSY")).upper()
     if status == "ACK":
