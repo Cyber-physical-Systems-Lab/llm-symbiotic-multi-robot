@@ -22,6 +22,7 @@ class Mission:
     location_y: int
     assigned_time: int
     at_location: bool = False
+    first_arrival_time: int | None = None
 
 
 def heuristic_episode_custom(env, render: bool = False, seed: int | None = None):
@@ -33,6 +34,11 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
     - completed deliveries
     - cooperative waiting time
     - picker idle time ratio
+    - avg load execution time
+    - avg unload execution time
+    - avg execution time per assignment
+    - avg wait time after first arrival (load + unload)
+    - assignment success rate (load + unload)
 
     Returns
     -------
@@ -83,6 +89,19 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
     cooperative_wait_steps = 0
     picker_idle_steps = 0
 
+    # Execution-time metrics
+    load_execution_times = []
+    unload_execution_times = []
+
+    # Wait-after-arrival metric (load + unload, only for completed assignments)
+    wait_after_first_arrival_times = []
+
+    # Success-rate counters (load + unload)
+    num_load_assignments_started = 0
+    num_unload_assignments_started = 0
+    num_load_assignments_completed = 0
+    num_unload_assignments_completed = 0
+
     while not done:
         request_queue = env.request_queue
         goal_locations = env.goals  # (y, x) format
@@ -118,6 +137,7 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                 timestep,
             )
             assigned_items[closest_agv] = item.id
+            num_load_assignments_started += 1
 
         # ------------------------------------------------------------------
         # Update AGV mission states
@@ -128,6 +148,8 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                 and agv.x == assigned_agvs[agv].location_x
                 and agv.y == assigned_agvs[agv].location_y
             ):
+                if not assigned_agvs[agv].at_location:
+                    assigned_agvs[agv].first_arrival_time = timestep
                 assigned_agvs[agv].at_location = True
 
             if agv not in assigned_agvs or agv.busy:
@@ -139,6 +161,18 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                 and assigned_agvs[agv].at_location
                 and agv.carrying_shelf
             ):
+                mission = assigned_agvs[agv]
+
+                # Record load assignment execution time
+                load_execution_times.append(timestep - mission.assigned_time)
+                num_load_assignments_completed += 1
+
+                # Record wait after first arrival for completed load assignment
+                if mission.first_arrival_time is not None:
+                    wait_after_first_arrival_times.append(
+                        timestep - mission.first_arrival_time
+                    )
+
                 goal_shortest_paths = [
                     env.find_path((agv.y, agv.x), (y, x), agv, care_for_agents=False)
                     for (x, y) in goal_locations
@@ -170,6 +204,12 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                     loc_id for loc_id in empty_location_ids if loc_id not in assigned_item_loc_agvs
                 ]
 
+                # If no empty location is available, keep current DELIVERING mission.
+                # This prevents crashing on argmin([]) and leaves success-rate semantics clean:
+                # the unload assignment is not started until a return target is actually assigned.
+                if not empty_location_ids:
+                    continue
+
                 empty_location_yx = [location_map[i] for i in empty_location_ids]
                 closest_empty_location_paths = [
                     env.find_path((agv.y, agv.x), (y, x), agv, care_for_agents=False)
@@ -188,6 +228,7 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                     closest_location_yx[0],
                     timestep,
                 )
+                num_unload_assignments_started += 1
 
             # [AGV RETURNING -> AGV None]
             if (
@@ -195,6 +236,18 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
                 and assigned_agvs[agv].at_location
                 and not agv.carrying_shelf
             ):
+                mission = assigned_agvs[agv]
+
+                # Record unload assignment execution time
+                unload_execution_times.append(timestep - mission.assigned_time)
+                num_unload_assignments_completed += 1
+
+                # Record wait after first arrival for completed unload assignment
+                if mission.first_arrival_time is not None:
+                    wait_after_first_arrival_times.append(
+                        timestep - mission.first_arrival_time
+                    )
+
                 assigned_agvs.pop(agv)
                 assigned_items.pop(agv)
 
@@ -238,7 +291,8 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
 
         # Cooperative waiting time (AGV-side operationalization):
         # count AGV timesteps where an AGV has reached its PICKING target
-        # but still has not picked up the shelf yet.
+        # but still has not picked up the shelf yet,
+        # or reached its RETURNING target but still has not dropped the shelf yet.
         for agv in agvs:
             if agv in assigned_agvs:
                 mission = assigned_agvs[agv]
@@ -281,6 +335,14 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
         all_infos.append(info)
         timestep += 1
 
+    total_completed_assignments = len(load_execution_times) + len(unload_execution_times)
+    total_execution_time = sum(load_execution_times) + sum(unload_execution_times)
+
+    total_started_assignments = num_load_assignments_started + num_unload_assignments_started
+    total_completed_successful_assignments = (
+        num_load_assignments_completed + num_unload_assignments_completed
+    )
+
     episode_metrics = {
         "episode_length": timestep,
         "num_pickers": len(pickers),
@@ -289,6 +351,31 @@ def heuristic_episode_custom(env, render: bool = False, seed: int | None = None)
         "picker_idle_time_ratio": (
             picker_idle_steps / (timestep * len(pickers))
             if timestep > 0 and len(pickers) > 0
+            else 0.0
+        ),
+        "avg_load_execution_time": (
+            sum(load_execution_times) / len(load_execution_times)
+            if load_execution_times
+            else 0.0
+        ),
+        "avg_unload_execution_time": (
+            sum(unload_execution_times) / len(unload_execution_times)
+            if unload_execution_times
+            else 0.0
+        ),
+        "avg_execution_time_per_assignment": (
+            total_execution_time / total_completed_assignments
+            if total_completed_assignments > 0
+            else 0.0
+        ),
+        "avg_wait_time_after_first_arrival": (
+            sum(wait_after_first_arrival_times) / len(wait_after_first_arrival_times)
+            if wait_after_first_arrival_times
+            else 0.0
+        ),
+        "assignment_success_rate": (
+            total_completed_successful_assignments / total_started_assignments
+            if total_started_assignments > 0
             else 0.0
         ),
     }

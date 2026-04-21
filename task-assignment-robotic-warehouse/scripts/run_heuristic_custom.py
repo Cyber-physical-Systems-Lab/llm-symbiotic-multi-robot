@@ -34,6 +34,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--max_steps",
+    default=500,
+    type=int,
+    help="Maximum episode steps",
+)
+
+parser.add_argument(
     "--render",
     action="store_true",
 )
@@ -73,9 +80,20 @@ def info_statistics(infos, global_episode_return, episode_returns, episode_metri
     last_info["cooperative_waiting_time"] = episode_metrics["cooperative_wait_steps"]
     last_info["picker_idle_time_ratio"] = episode_metrics["picker_idle_time_ratio"]
 
+    # Execution-time metrics
+    last_info["avg_load_execution_time"] = episode_metrics["avg_load_execution_time"]
+    last_info["avg_unload_execution_time"] = episode_metrics["avg_unload_execution_time"]
+    last_info["avg_execution_time_per_assignment"] = episode_metrics["avg_execution_time_per_assignment"]
+
+    # Arrival-wait and success-rate metrics
+    last_info["avg_wait_time_after_first_arrival"] = episode_metrics["avg_wait_time_after_first_arrival"]
+    last_info["assignment_success_rate"] = episode_metrics["assignment_success_rate"]
+
     # Average cooperative waiting time per delivery
     if total_deliveries > 0:
-        last_info["avg_cooperative_waiting_time"] = episode_metrics["cooperative_wait_steps"] / total_deliveries
+        last_info["avg_cooperative_waiting_time"] = (
+            episode_metrics["cooperative_wait_steps"] / total_deliveries
+        )
     else:
         last_info["avg_cooperative_waiting_time"] = 0.0
 
@@ -83,10 +101,12 @@ def info_statistics(infos, global_episode_return, episode_returns, episode_metri
 
 
 if __name__ == "__main__":
-    env = gym.make(args.env)
+    env = gym.make(args.env, max_steps=args.max_steps)
     base_seed = args.seed
     completed_episodes = 0
     all_episode_results = []
+
+    print(f"env max_steps = {env.unwrapped.max_steps}")
 
     for i in range(args.num_episodes):
         start = time.time()
@@ -116,6 +136,11 @@ if __name__ == "__main__":
             f"| [Cooperative waiting time={last_info['cooperative_waiting_time']:.2f}]"
             f"| [Avg cooperative waiting time={last_info['avg_cooperative_waiting_time']:.2f}]"
             f"| [Picker idle time ratio={last_info['picker_idle_time_ratio']:.4f}]"
+            f"| [Avg load execution time={last_info['avg_load_execution_time']:.2f}]"
+            f"| [Avg unload execution time={last_info['avg_unload_execution_time']:.2f}]"
+            f"| [Avg execution time per assignment={last_info['avg_execution_time_per_assignment']:.2f}]"
+            f"| [Avg wait time after first arrival={last_info['avg_wait_time_after_first_arrival']:.2f}]"
+            f"| [Assignment success rate={last_info['assignment_success_rate']:.4f}]"
             f"| [Total clashes={last_info['total_clashes']:.2f}]"
             f"| [Total stuck={last_info['total_stuck']:.2f}]"
             f"| [FPS={fps:.2f}]"

@@ -52,6 +52,8 @@ def summarize_communication_non_mutualistic_v2(records: list[dict]) -> dict[str,
     total_zero_candidate_requests = 0
 
     total_assigned_requests = 0
+    total_execution_time_all = 0
+    total_tasks_for_execution_time_all = 0
     total_illegal_revisions = 0
 
     stage_failure_fallbacks = 0
@@ -82,6 +84,8 @@ def summarize_communication_non_mutualistic_v2(records: list[dict]) -> dict[str,
                 "zero_candidate_requests": 0,
                 "picker_candidate_count_breakdown": {0: 0, 1: 0, 2: 0, 3: 0, "gt3": 0},
                 "assigned_requests": 0,
+                "execution_time_all_sum": 0,
+                "execution_time_all_task_count": 0,
                 "illegal_revisions": 0,
                 "stage_failure_fallbacks": 0,
                 "no_executable_action_fallbacks": 0,
@@ -164,6 +168,40 @@ def summarize_communication_non_mutualistic_v2(records: list[dict]) -> dict[str,
             breakdown["sum_eta_gap"] += sum_eta_gap
             breakdown["max_sync_cost_sum"] += max_sync_cost
 
+    execution_time_all_sum, execution_time_all_task_count, execution_time_all_by_episode = (
+        _compute_execution_time_all_metrics(records)
+    )
+    total_execution_time_all += execution_time_all_sum
+    total_tasks_for_execution_time_all += execution_time_all_task_count
+    for episode_idx, item in execution_time_all_by_episode.items():
+        breakdown = episode_breakdown.setdefault(
+            int(episode_idx),
+            {
+                "steps": 0,
+                "communication_steps": 0,
+                "stage1_requests": 0,
+                "stage2_requests": 0,
+                "ack_requests": 0,
+                "busy_requests": 0,
+                "picker_candidates_total": 0,
+                "zero_candidate_requests": 0,
+                "picker_candidate_count_breakdown": {0: 0, 1: 0, 2: 0, 3: 0, "gt3": 0},
+                "assigned_requests": 0,
+                "execution_time_all_sum": 0,
+                "execution_time_all_task_count": 0,
+                "illegal_revisions": 0,
+                "stage_failure_fallbacks": 0,
+                "no_executable_action_fallbacks": 0,
+                "objective_score_steps": 0,
+                "num_assignments_sum": 0,
+                "sum_sync_cost": 0,
+                "sum_eta_gap": 0,
+                "max_sync_cost_sum": 0,
+            },
+        )
+        breakdown["execution_time_all_sum"] += int(item.get("execution_time_all_sum", 0))
+        breakdown["execution_time_all_task_count"] += int(item.get("execution_time_all_task_count", 0))
+
     return {
         "episodes": len(episodes_seen),
         "total_steps": total_steps,
@@ -182,6 +220,7 @@ def summarize_communication_non_mutualistic_v2(records: list[dict]) -> dict[str,
         "picker_candidate_count_breakdown": picker_candidate_count_breakdown,
         "total_assigned_requests": total_assigned_requests,
         "assignment_rate": _safe_ratio(total_assigned_requests, total_ack_requests),
+        "avg_execution_time_all": _safe_ratio(total_execution_time_all, total_tasks_for_execution_time_all),
         "total_illegal_revisions": total_illegal_revisions,
         "illegal_revision_rate": _safe_ratio(total_illegal_revisions, total_assigned_requests),
         "stage_failure_fallbacks": stage_failure_fallbacks,
@@ -228,6 +267,7 @@ def print_summary(summary: dict[str, Any]) -> None:
 
     print(f"total_assigned_requests: {summary.get('total_assigned_requests', 0)}")
     print(f"assignment_rate: {float(summary.get('assignment_rate', 0.0)):.3f}")
+    print(f"avg_execution_time_all: {float(summary.get('avg_execution_time_all', 0.0)):.3f}")
     print(f"total_illegal_revisions: {summary.get('total_illegal_revisions', 0)}")
     print(f"illegal_revision_rate: {float(summary.get('illegal_revision_rate', 0.0)):.3f}")
 
@@ -275,10 +315,103 @@ def print_summary(summary: dict[str, Any]) -> None:
                 f"picker_candidates_total={item.get('picker_candidates_total', 0)} "
                 f"zero_candidate_requests={item.get('zero_candidate_requests', 0)} "
                 f"assigned={item.get('assigned_requests', 0)} "
+                f"avg_execution_time_all={_safe_ratio(item.get('execution_time_all_sum', 0), item.get('execution_time_all_task_count', 0)):.3f} "
                 f"illegal_revisions={item.get('illegal_revisions', 0)} "
                 f"stage_failure_fallbacks={item.get('stage_failure_fallbacks', 0)} "
                 f"no_executable_action_fallbacks={item.get('no_executable_action_fallbacks', 0)}"
             )
+
+
+def _compute_execution_time_all_metrics(
+    records: list[dict[str, Any]],
+) -> tuple[int, int, dict[int, dict[str, int]]]:
+    """Compute observed assignment lifetimes from existing JSONL records."""
+    total_duration = 0
+    total_count = 0
+    by_episode: dict[int, dict[str, int]] = {}
+    active_tasks_by_episode: dict[int, dict[int, dict[str, Any]]] = {}
+    episode_last_step: dict[int, int] = {}
+
+    def finalize_task(episode_idx: int, agv_id: int, terminal_step: int) -> None:
+        nonlocal total_duration, total_count
+        episode_tasks = active_tasks_by_episode.get(int(episode_idx), {})
+        task = episode_tasks.pop(int(agv_id), None)
+        if task is None:
+            return
+        duration = int(terminal_step) - int(task.get("start_step", terminal_step))
+        if duration < 0:
+            return
+        total_duration += int(duration)
+        total_count += 1
+        bucket = by_episode.setdefault(
+            int(episode_idx),
+            {"execution_time_all_sum": 0, "execution_time_all_task_count": 0},
+        )
+        bucket["execution_time_all_sum"] += int(duration)
+        bucket["execution_time_all_task_count"] += 1
+
+    for idx, record in enumerate(records):
+        episode_idx = _safe_int(record.get("episode_idx", 0))
+        step_idx = _safe_int(record.get("step_idx", idx))
+        episode_last_step[int(episode_idx)] = int(step_idx)
+        active_tasks = active_tasks_by_episode.setdefault(int(episode_idx), {})
+        carrying_by_agv = _extract_agv_carrying_by_id(record.get("state_min"))
+
+        for agv_id, task in list(active_tasks.items()):
+            carrying = carrying_by_agv.get(int(agv_id))
+            if carrying is None:
+                continue
+            purpose = str(task.get("purpose", "")).upper()
+            completed = (
+                (purpose == "LOAD" and carrying)
+                or (purpose == "UNLOAD" and not carrying)
+            )
+            if completed:
+                finalize_task(int(episode_idx), int(agv_id), int(step_idx))
+
+        comm_final_plan = record.get("comm_final_plan")
+        assignments = comm_final_plan.get("assignments", []) if isinstance(comm_final_plan, dict) else []
+        if not isinstance(assignments, list):
+            assignments = []
+        purpose_by_request = _extract_request_purpose_map(record.get("comm_request"))
+
+        current_assignments_by_agv: dict[int, dict[str, Any]] = {}
+        for assignment in assignments:
+            if not isinstance(assignment, dict):
+                continue
+            agv_id = _safe_int(assignment.get("agv_id", 0))
+            picker_id = _safe_int(assignment.get("picker_id", 0))
+            rack_id = _safe_int(assignment.get("rack_id", 0))
+            request_id = assignment.get("request_id")
+            if agv_id <= 0 or picker_id <= 0 or rack_id <= 0 or not isinstance(request_id, str):
+                continue
+
+            purpose = str(purpose_by_request.get(request_id, "")).upper()
+            if purpose not in {"LOAD", "UNLOAD"}:
+                carrying = carrying_by_agv.get(int(agv_id))
+                if carrying is None:
+                    continue
+                purpose = "UNLOAD" if carrying else "LOAD"
+
+            current_assignments_by_agv[int(agv_id)] = {
+                "signature": (str(request_id), int(picker_id), int(rack_id), str(purpose)),
+                "purpose": str(purpose),
+                "start_step": int(step_idx),
+            }
+
+        for agv_id, new_task in current_assignments_by_agv.items():
+            existing_task = active_tasks.get(int(agv_id))
+            if existing_task is not None and existing_task.get("signature") != new_task.get("signature"):
+                finalize_task(int(episode_idx), int(agv_id), int(step_idx))
+            if existing_task is None or existing_task.get("signature") != new_task.get("signature"):
+                active_tasks[int(agv_id)] = dict(new_task)
+
+    for episode_idx, active_tasks in active_tasks_by_episode.items():
+        terminal_step = int(episode_last_step.get(int(episode_idx), 0))
+        for agv_id in list(active_tasks.keys()):
+            finalize_task(int(episode_idx), int(agv_id), int(terminal_step))
+
+    return total_duration, total_count, by_episode
 
 
 def _unwrap_message(value: Any) -> dict[str, Any]:
