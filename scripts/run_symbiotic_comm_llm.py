@@ -113,17 +113,19 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Planner: Trigger policy
-    parser.add_argument(
-        "--wait_timeout_steps",
-        type=int,
-        default=40,
-        help="Re-communicate if an active cooperative assignment appears stalled beyond this many steps.",
-    )
+    
     parser.add_argument(
         "--min_recommunication_gap_steps",
         type=int,
         default=8,
         help="Minimum steps between communication rounds (anti-spam).",
+    )
+
+    parser.add_argument(
+        "--idle_probe_gap_steps",
+        type=int,
+        default=25,
+        help="When no picker is available, allow low-frequency probing every this many steps.",
     )
 
     # Planner: Global constraints
@@ -141,6 +143,7 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Enforce unique rack per step among assigned requests (0/1).",
     )
+
 
     # Planner: Prompt condition
     parser.add_argument(
@@ -178,7 +181,7 @@ def build_planner_config(args: argparse.Namespace) -> SymbioticCommLLMPlannerCon
         stage1_backups=args.stage1_backups,
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         stage2_max_options_per_request=args.stage2_max_options_per_request,
-        wait_timeout_steps=args.wait_timeout_steps,
+        idle_probe_gap_steps=args.idle_probe_gap_steps,
         min_recommunication_gap_steps=args.min_recommunication_gap_steps,
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),
