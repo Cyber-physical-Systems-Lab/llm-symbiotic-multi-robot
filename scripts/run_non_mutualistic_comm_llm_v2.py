@@ -475,15 +475,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max_requests_per_batch",
         type=int,
-        default=2,
+        default=3,
         help="Maximum requests handled per communication mini-batch.",
     )
-    parser.add_argument(
-        "--wait_timeout_steps",
-        type=int,
-        default=40,
-        help="Re-communicate if an active cooperative assignment appears stalled beyond this many steps.",
-    )
+    
+    
     parser.add_argument(
         "--min_recommunication_gap_steps",
         type=int,
@@ -537,7 +533,7 @@ def build_planner_config(args: argparse.Namespace) -> NonMutualisticCommLLMPlann
         stage1_pool_k=args.stage1_pool_k,
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         max_requests_per_batch=args.max_requests_per_batch,
-        wait_timeout_steps=args.wait_timeout_steps,
+        
         min_recommunication_gap_steps=args.min_recommunication_gap_steps,
         idle_probe_gap_steps=args.idle_probe_gap_steps,
         unique_picker=bool(args.unique_picker),

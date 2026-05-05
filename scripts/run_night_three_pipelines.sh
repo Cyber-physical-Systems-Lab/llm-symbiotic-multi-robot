@@ -13,9 +13,9 @@ ENV_IDS=(
 
 EPISODES=4
 SEED=1
-MAX_STEPS=1500
+MAX_STEPS=1000
 
-OUT_DIR="outputs/night_run_20260421"
+OUT_DIR="outputs/night_run_20260505"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
@@ -26,7 +26,7 @@ CARE_FOR_AGENTS_IN_COST=0
 
 STAGE1_POOL_K=8
 STAGE2_PICKER_OPTIONS_PER_RACK=3
-WAIT_TIMEOUT_STEPS=40
+
 MIN_RECOMMUNICATION_GAP_STEPS=8
 UNIQUE_PICKER=1
 UNIQUE_RACK=1
@@ -69,8 +69,8 @@ run_symbiotic() {
     --stage1_backups "${STAGE1_BACKUPS}" \
     --stage2_picker_options_per_rack "${STAGE2_PICKER_OPTIONS_PER_RACK}" \
     --stage2_max_options_per_request "${STAGE2_MAX_OPTIONS_PER_REQUEST}" \
-    --wait_timeout_steps "${WAIT_TIMEOUT_STEPS}" \
     --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
+    --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
     --unique_picker "${UNIQUE_PICKER}" \
     --unique_rack "${UNIQUE_RACK}"
 }
@@ -94,7 +94,6 @@ run_non_mutualistic_v2() {
     --stage1_pool_k "${STAGE1_POOL_K}" \
     --stage2_picker_options_per_rack "${STAGE2_PICKER_OPTIONS_PER_RACK}" \
     --max_requests_per_batch "${MAX_REQUESTS_PER_BATCH}" \
-    --wait_timeout_steps "${WAIT_TIMEOUT_STEPS}" \
     --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
     --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
     --unique_picker "${UNIQUE_PICKER}" \
