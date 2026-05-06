@@ -480,12 +480,7 @@ def parse_args() -> argparse.Namespace:
     )
     
     
-    parser.add_argument(
-        "--min_recommunication_gap_steps",
-        type=int,
-        default=8,
-        help="Minimum steps between communication rounds.",
-    )
+    
     parser.add_argument(
         "--idle_probe_gap_steps",
         type=int,
@@ -534,7 +529,7 @@ def build_planner_config(args: argparse.Namespace) -> NonMutualisticCommLLMPlann
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         max_requests_per_batch=args.max_requests_per_batch,
         
-        min_recommunication_gap_steps=args.min_recommunication_gap_steps,
+        
         idle_probe_gap_steps=args.idle_probe_gap_steps,
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),

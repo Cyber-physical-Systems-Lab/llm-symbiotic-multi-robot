@@ -15,7 +15,7 @@ EPISODES=4
 SEED=1
 MAX_STEPS=1000
 
-OUT_DIR="outputs/night_run_20260505"
+OUT_DIR="outputs/night_run_20260506"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
@@ -69,7 +69,6 @@ run_symbiotic() {
     --stage1_backups "${STAGE1_BACKUPS}" \
     --stage2_picker_options_per_rack "${STAGE2_PICKER_OPTIONS_PER_RACK}" \
     --stage2_max_options_per_request "${STAGE2_MAX_OPTIONS_PER_REQUEST}" \
-    --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
     --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
     --unique_picker "${UNIQUE_PICKER}" \
     --unique_rack "${UNIQUE_RACK}"
@@ -94,7 +93,6 @@ run_non_mutualistic_v2() {
     --stage1_pool_k "${STAGE1_POOL_K}" \
     --stage2_picker_options_per_rack "${STAGE2_PICKER_OPTIONS_PER_RACK}" \
     --max_requests_per_batch "${MAX_REQUESTS_PER_BATCH}" \
-    --min_recommunication_gap_steps "${MIN_RECOMMUNICATION_GAP_STEPS}" \
     --idle_probe_gap_steps "${IDLE_PROBE_GAP_STEPS}" \
     --unique_picker "${UNIQUE_PICKER}" \
     --unique_rack "${UNIQUE_RACK}"

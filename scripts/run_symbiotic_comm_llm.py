@@ -7,7 +7,7 @@ This script mirrors the repo's other runners:
 - Exposes planner-specific knobs with names that match the new experiment design:
   Stage1: pool_k, backups
   Stage2: picker_options_per_rack, max_options_per_request
-  Trigger: wait_timeout_steps, min_recommunication_gap_steps
+  Trigger: wait_timeout_steps, 
   Constraints: unique_picker, unique_rack
   Debug: debug
 
@@ -18,7 +18,7 @@ Example:
     --out_dir outputs \
     --stage1_pool_k 8 --stage1_backups 2 \
     --stage2_picker_options_per_rack 3 --stage2_max_options_per_request 2 \
-    --wait_timeout_steps 40 --min_recommunication_gap_steps 8 \
+    --wait_timeout_steps 40  \
     --unique_picker 1 --unique_rack 1 \
     --enable_rationale \
     --debug
@@ -114,12 +114,6 @@ def parse_args() -> argparse.Namespace:
 
     # Planner: Trigger policy
     
-    parser.add_argument(
-        "--min_recommunication_gap_steps",
-        type=int,
-        default=8,
-        help="Minimum steps between communication rounds (anti-spam).",
-    )
 
     parser.add_argument(
         "--idle_probe_gap_steps",
@@ -182,7 +176,7 @@ def build_planner_config(args: argparse.Namespace) -> SymbioticCommLLMPlannerCon
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         stage2_max_options_per_request=args.stage2_max_options_per_request,
         idle_probe_gap_steps=args.idle_probe_gap_steps,
-        min_recommunication_gap_steps=args.min_recommunication_gap_steps,
+       
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),
         enable_rationale=args.enable_rationale,
