@@ -77,8 +77,7 @@ class SymbioticCommLLMPlannerConfig:
     max_requests_per_batch: int = 3         # mini-batch size within one communication round
 
     # Communication triggering
-    min_recommunication_gap_steps: int = 12
-    idle_probe_gap_steps: int = 25   # 新增：当没有可用 picker 时，允许低频探测
+    idle_probe_gap_steps: int = 20   # 当没有可用 picker 时，允许低频探测
 
     # Output constraints
     unique_picker: bool = True
@@ -102,7 +101,6 @@ class SymbioticCommLLMPlanner:
       - last_response: Stage2 sanitized message dict (or None)
       - last_final_plan: Stage3 sanitized message dict (or fallback marker)
       - last_communication_triggered: bool
-      - planner_throttled_by_budget: bool
       - last_used_fallback: bool
     """
 
@@ -121,9 +119,6 @@ class SymbioticCommLLMPlanner:
         self.last_idle_probe_step: int = -10**9
         self.last_available_picker_count: int = 0
         self.active_assignments: Dict[int, Dict[str, Any]] = {}  # agv_id -> {picker_id,rack_id,purpose,start_step}
-        self.budget_window_steps: int = 20
-        self.budget_max_comm_steps: int = 3
-        self._communication_history: List[int] = []
         self._last_registered_assignment_by_agv: Dict[int, Dict[str, Any]] = {}
         self._last_dropped_assignment_by_agv: Dict[int, Dict[str, Any]] = {}
 
@@ -136,7 +131,6 @@ class SymbioticCommLLMPlanner:
         self.last_response: Optional[dict] = None
         self.last_final_plan: Optional[dict] = None
         self.last_communication_triggered: bool = False
-        self.planner_throttled_by_budget: bool = False
         self.last_used_fallback: bool = False
         self.last_trigger_reasons: list[str] = []
         self.trigger_reason_counts: Dict[str, int] = {}
@@ -163,7 +157,6 @@ class SymbioticCommLLMPlanner:
             self.rack_to_region = state.get("rack_to_region", {})
             self.region_to_racks = state.get("region_to_racks", {})
 
-        self.planner_throttled_by_budget = False
         self._update_active_assignments_from_state(state)
 
         if not self._should_trigger_communication(state):
@@ -554,10 +547,6 @@ class SymbioticCommLLMPlanner:
                 "available_pickers": int(available_picker_count),
                 "idle_need": bool(idle_need),
                 "eligible_idle_agv_ids": sorted(int(x) for x in eligible_idle_agv_ids),
-                "recent_comm": bool(extra.get("recent_comm", False)),
-                "min_gap": (
-                    int(extra["min_gap"]) if extra.get("min_gap") is not None else None
-                ),
                 "no_picker_idle_probe_gap_not_reached": bool(
                     extra.get("no_picker_idle_probe_gap_not_reached", False)
                 ),
@@ -566,7 +555,6 @@ class SymbioticCommLLMPlanner:
                     if extra.get("idle_probe_gap_remaining") is not None
                     else None
                 ),
-                "budget_throttling": bool(extra.get("budget_throttling", False)),
                 "no_batch_requests_possible": bool(extra.get("no_batch_requests_possible", False)),
             }
             self.last_no_communication_reason_trace = trace
@@ -622,9 +610,8 @@ class SymbioticCommLLMPlanner:
         )
 
         # ----------------------------
-        # New-task trigger (idle_need)
-        # Only enabled when at least one picker is currently available.
-        # If no picker is available, suppress ordinary idle-triggered communication.
+        # Legal idle AGV need:
+        # only idle, targetless AGVs that need a new cooperative LOAD/UNLOAD task.
         # ----------------------------
         eligible_idle_agv_ids: list[int] = []
         for a in agents:
@@ -663,10 +650,10 @@ class SymbioticCommLLMPlanner:
                 candidate_trigger_reason = "ordinary_idle_need"
 
         # ----------------------------
-        # Budgeted probing:
-        # When no picker is currently available, ordinary idle-triggered comm is suppressed,
-        # but we allow a low-frequency probe so the system can discover newly available pickers
-        # and avoid starvation of idle AGVs.
+        # Low-frequency probing when no picker is currently available:
+        # when idle cooperative need exists but no picker is available for a new
+        # commitment, probe only every `idle_probe_gap_steps` to avoid
+        # communication every step under picker scarcity.
         # ----------------------------
         if candidate_trigger_reason is None:
             idle_probe_gap_elapsed = self.step_counter - self.last_idle_probe_step
@@ -683,79 +670,10 @@ class SymbioticCommLLMPlanner:
                 return finish(False)
             candidate_trigger_reason = "idle_probe_no_picker"
 
-        min_gap = self._scarcity_aware_min_gap(state, agents)
-        recent_comm = (self.step_counter - self.last_communication_step) < min_gap
-        if recent_comm:
-            record_no_communication_trace(
-                "recent_comm_due_to_min_gap",
-                recent_comm=True,
-                min_gap=min_gap,
-                no_batch_requests_possible=preview_no_batch_requests_possible(),
-            )
-            return finish(False)
-
-        if self._is_budget_throttled():
-            self.planner_throttled_by_budget = True
-            record_no_communication_trace(
-                "budget_throttling",
-                budget_throttling=True,
-                min_gap=min_gap,
-                no_batch_requests_possible=preview_no_batch_requests_possible(),
-            )
-            return finish(False)
-
         if candidate_trigger_reason == "idle_probe_no_picker":
             self.last_idle_probe_step = self.step_counter
         trigger_reasons.append(candidate_trigger_reason)
         return finish(True)
-
-    def _scarcity_aware_min_gap(self, state: dict[str, Any], agents: list[dict[str, Any]]) -> int:
-        """Increase re-communication gap under picker scarcity."""
-        num_agvs = int(state.get("meta", {}).get("num_agvs", 0))
-        num_pickers = int(state.get("meta", {}).get("num_pickers", 0))
-        if num_agvs <= 0:
-            num_agvs = sum(1 for agent in agents if agent.get("type") == "AGV")
-        if num_pickers <= 0:
-            num_pickers = sum(1 for agent in agents if agent.get("type") == "PICKER")
-
-        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
-        protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
-        reserved_picker_ids = {
-            int(assignment.get("picker_id", -1))
-            for assignment in self.active_assignments.values()
-            if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
-        }
-        idle_pickers = sum(
-            1
-            for agent in agents
-            if agent.get("type") == "PICKER"
-            and not bool(agent.get("busy", False))
-            and int(agent["id"]) not in reserved_picker_ids
-            and int(agent["id"]) not in protected_picker_ids
-        )
-
-        mild_scarcity = (num_agvs > num_pickers) or (idle_pickers <= 1)
-        severe_scarcity = (num_agvs > num_pickers) and (idle_pickers <= 1)
-        if severe_scarcity:
-            return 20
-        if mild_scarcity:
-            return 15
-        return int(self.config.min_recommunication_gap_steps)
-
-    def _is_budget_throttled(self) -> bool:
-        """Return whether the rolling communication budget has been exhausted."""
-        self._prune_communication_history()
-        return len(self._communication_history) >= self.budget_max_comm_steps
-
-    def _record_communication_step(self, step_idx: int) -> None:
-        self._communication_history.append(int(step_idx))
-        self._prune_communication_history()
-
-    def _prune_communication_history(self) -> None:
-        window_start = self.step_counter - self.budget_window_steps + 1
-        self._communication_history = [
-            int(step_idx) for step_idx in self._communication_history if int(step_idx) >= window_start
-        ]
 
     def _coords_tuple(self, coords: Any) -> Optional[Tuple[int, int]]:
         if not isinstance(coords, (list, tuple)) or len(coords) != 2:
@@ -1487,16 +1405,8 @@ class SymbioticCommLLMPlanner:
         return deduped
 
     def _mark_communication_effective(self) -> None:
-        """Record a communication round only when it produced an executable outcome.
-
-        A communication round is only counted as effective if it produces
-        executable assignments, executable fixed actions, or explicitly falls
-        back to the rule-based planner. Otherwise, the round is not recorded as
-        a successful communication event, preventing idle deadlock caused by
-        premature throttling.
-        """
+        """Record the most recent step that produced an effective communication outcome."""
         self.last_communication_step = self.step_counter
-        self._record_communication_step(self.step_counter)
 
     def _has_nonzero_actions(self, actions: list[int]) -> bool:
         """Return whether at least one macro-action is executable and non-zero.
@@ -2582,7 +2492,7 @@ class SymbioticCommLLMPlanner:
         Use a fresh deterministic rule-based SymbioticPlanner for safety.
 
         P1 fix:
-        - Clear this planner's active_assignments and update last_communication_step,
+        - Clear this planner's active_assignments and update communication bookkeeping,
           preventing stale state and immediate re-trigger loops.
         """
         self.last_used_fallback = True
@@ -2592,7 +2502,7 @@ class SymbioticCommLLMPlanner:
         # Preserve still-valid cooperative contexts; fallback should not silently
         # drop AGV-picker bindings that the environment is still executing.
         self._update_active_assignments_from_state(state)
-        self.last_communication_step = self.step_counter
+        self._mark_communication_effective()
 
         # Use a fresh instance to avoid hidden coupling
         rule_fallback = RuleSymbioticPlanner()
