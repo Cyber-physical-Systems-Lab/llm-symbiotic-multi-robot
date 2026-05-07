@@ -607,10 +607,12 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         """
         Build Stage 2 payload using picker-side information only:
         - committed rack
-        - picker candidates with eta_picker
-        - idle_pickers / picker_scarcity
+        - picker candidates with sync_cost / eta_gap / eta_picker
+        - idle_pickers as neutral system context
 
-        No eta_agv is passed to Stage 2.
+        Note:
+        - picker_scarcity is intentionally removed
+        - Stage 2 should ACK whenever at least one feasible picker candidate exists
         """
         reserved_picker_ids = set() if reserved_picker_ids is None else {int(x) for x in reserved_picker_ids}
 
@@ -635,7 +637,6 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         ]
 
         idle_pickers = len(available_pickers)
-        picker_scarcity = "high" if idle_pickers <= 1 else "low"
 
         requests_payload: list[dict[str, Any]] = []
         for req in stage1_bundle:
@@ -643,14 +644,18 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             committed_rack_id = self._safe_int(req.get("committed_rack_id"))
             if committed_rack_id <= 0:
                 continue
+
             agv_id = self._safe_int(req.get("agv_id"))
             protected_picker_id_for_request = int(protected_picker_bindings.get(int(agv_id), -1))
+
             eta_agv = self._lookup_stage1_eta_agv(req, committed_rack_id)
             if eta_agv < 0:
                 continue
 
             candidate_pickers = list(available_pickers)
 
+            # Allow the picker already semantically bound to this AGV/rack context
+            # to reappear as a candidate for this request only.
             if protected_picker_id_for_request > 0:
                 protected_picker_state = next(
                     (
@@ -678,6 +683,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 )
                 if eta_picker is None:
                     continue
+
                 eta_picker = int(eta_picker)
                 picker_candidates.append(
                     {
@@ -688,8 +694,11 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                     }
                 )
 
+            # Keep deterministic ordering; Stage 2 can use these as ranking signals.
             picker_candidates.sort(
                 key=lambda item: (
+                    int(item["sync_cost"]),
+                    int(item["eta_gap"]),
                     int(item["eta_picker"]),
                     int(item["picker_id"]),
                 )
@@ -707,7 +716,6 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         return {
             "system_pressure": {
                 "idle_pickers": int(idle_pickers),
-                "picker_scarcity": picker_scarcity,
             },
             "requests": requests_payload,
         }
@@ -807,33 +815,37 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             "- return BUSY.\n"
             "\n"
             "What the input means:\n"
-            "- picker_scarcity tells you whether picker support is scarce or not.\n"
-            "- Each picker candidate is one possible picker for the already committed rack.\n"
+            "- Each request already has one committed rack chosen by Stage 1.\n"
+            "- Each picker candidate is one possible picker for that committed rack.\n"
             "- sync_cost is the main task-level cost. Lower sync_cost is generally better.\n"
-            "- eta_gap shows AGV-picker mismatch. Lower eta_gap is generally better.\n"
+            "- eta_gap shows AGV-picker arrival mismatch. Lower eta_gap is generally better.\n"
             "- eta_picker is the picker-side travel cost. Lower eta_picker is generally better.\n"
+            "- idle_pickers tells you how many picker resources are currently available in this batch.\n"
             "\n"
-            "Decision rules:\n"
-            "1) sync_cost is the main decision factor.\n"
-            "2) eta_gap is the next decision factor.\n"
-            "3) eta_picker is only a secondary tie-break signal when sync_cost and eta_gap are similar.\n"
-            "4) If a request has no picker candidates, return BUSY.\n"
-            "5) If at least one picker candidate provides reasonably good support for the committed rack, return ACK.\n"
-            "6) If you return ACK, choose the picker candidate that gives the best support for that committed rack.\n"
+            "Decision principles:\n"
+            "1) If a request has no picker candidates, return BUSY.\n"
+            "2) If a request has picker candidates, it is supportable in principle.\n"
+            "3) This is a batch-level decision: multiple requests may compete for fewer idle pickers than the number of supportable requests.\n"
+            "4) If idle picker resources are fewer than the number of supportable requests in the batch, assign pickers only to the most worthwhile requests.\n"
+            "5) Requests that are supportable in principle but are not selected under the current batch-level competition should return BUSY.\n"
+            "6) Do not ACK two different requests with the same picker in the same batch.\n"
             "\n"
-            "Scarcity rule:\n"
-            "1) If picker_scarcity is high, be more conservative.\n"
-            "2) In high scarcity conditions, do not ACK a request merely because it is feasible.\n"
-            "3) In high scarcity conditions, return BUSY when the available picker candidates are clearly poor support choices.\n"
-            "4) But do not return BUSY only because a request is not the best one in the batch.\n"
+            "How to decide which requests are most worthwhile:\n"
+            "1) Lower sync_cost is the main priority.\n"
+            "2) If sync_cost is similar, prefer lower eta_gap.\n"
+            "3) If still similar, prefer lower eta_picker.\n"
+            "4) If still tied, prefer lower picker_id for determinism.\n"
             "\n"
-            "Batch rule:\n"
-            "- Do not ACK two different requests with the same picker in the same batch.\n"
+            "How to choose the picker for an ACKed request:\n"
+            "- Choose the picker candidate that gives the best support for that request using the same ranking logic.\n"
             "\n"
             "Important limits:\n"
             "- Do not change the committed rack.\n"
             "- Do not suggest another rack.\n"
             "- Use only the provided picker candidates.\n"
+            "- Return exactly one status per request.\n"
+            "- ACK means one specific picker is assigned now.\n"
+            "- BUSY means either no feasible picker candidate exists, or the request is not selected under the current batch-level picker competition.\n"
             "\n"
             "Output JSON only.\n"
             'Return exactly: {"responses":[{"request_id":"...","status":"ACK","picker_id":5}]}'
@@ -1176,48 +1188,67 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         return committed
 
     def _build_stage2_deterministic_from_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        """Deterministic picker-side ACK/BUSY fallback."""
-        picker_scarcity = str(payload.get("system_pressure", {}).get("picker_scarcity", "low")).lower()
+        """
+        Deterministic picker-side ACK/BUSY fallback.
 
+        Policy:
+        - If no feasible picker candidates exist for the committed rack, return BUSY.
+        - If at least one feasible picker candidate exists, return ACK with the best picker.
+        - Picker scarcity is NOT used as a rejection factor.
+        - Candidate ranking is deterministic:
+            1) lower sync_cost
+            2) lower eta_gap
+            3) lower eta_picker
+            4) lower picker_id
+        """
         used_pickers: set[int] = set()
         responses: list[dict[str, Any]] = []
 
         for req in payload.get("requests", []):
             if not isinstance(req, dict):
                 continue
+
             request_id = req.get("request_id")
             if not isinstance(request_id, str):
                 continue
 
-            candidates = []
+            candidates: list[dict[str, Any]] = []
             for candidate in req.get("picker_candidates", []):
                 if not isinstance(candidate, dict):
                     continue
+
                 picker_id = self._safe_int(candidate.get("picker_id"))
+                sync_cost = self._safe_int(candidate.get("sync_cost"))
+                eta_gap = self._safe_int(candidate.get("eta_gap"))
                 eta_picker = self._safe_int(candidate.get("eta_picker"))
-                if picker_id <= 0 or eta_picker < 0:
+
+                if picker_id <= 0:
                     continue
+                if sync_cost < 0 or eta_gap < 0 or eta_picker < 0:
+                    continue
+
                 candidates.append(
                     {
                         "picker_id": int(picker_id),
+                        "sync_cost": int(sync_cost),
+                        "eta_gap": int(eta_gap),
                         "eta_picker": int(eta_picker),
                     }
                 )
 
-            candidates.sort(key=lambda c: (int(c["eta_picker"]), int(c["picker_id"])))
+            candidates.sort(
+                key=lambda c: (
+                    int(c["sync_cost"]),
+                    int(c["eta_gap"]),
+                    int(c["eta_picker"]),
+                    int(c["picker_id"]),
+                )
+            )
 
             chosen = None
-            eta_threshold = 999999
-            if picker_scarcity == "high":
-                # Conservative under scarcity: avoid clearly high-cost support.
-                eta_threshold = 20
-
             for candidate in candidates:
                 picker_id = int(candidate["picker_id"])
-                eta_picker = int(candidate["eta_picker"])
                 if picker_id in used_pickers:
-                    continue
-                if eta_picker > eta_threshold:
                     continue
                 chosen = candidate
                 break
