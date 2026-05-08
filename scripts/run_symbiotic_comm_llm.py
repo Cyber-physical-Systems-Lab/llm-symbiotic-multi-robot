@@ -7,18 +7,17 @@ This script mirrors the repo's other runners:
 - Exposes planner-specific knobs with names that match the new experiment design:
   Stage1: pool_k, backups
   Stage2: picker_options_per_rack, max_options_per_request
-  Trigger: wait_timeout_steps, 
+  Trigger: wait_timeout_steps, idle_probe_gap_steps
   Constraints: unique_picker, unique_rack
   Debug: debug
 
 Example:
   python scripts/run_symbiotic_comm_llm.py \
     --env_id tarware-small-2agvs-2pickers-partialobs-v1 \
-    --episodes 5 --seed 0 --max_steps 500 \
+    --num_seeds 4 --repeats_per_seed 3 --seed 0 --max_steps 500 \
     --out_dir outputs \
     --stage1_pool_k 8 --stage1_backups 2 \
     --stage2_picker_options_per_rack 3 --stage2_max_options_per_request 2 \
-    --wait_timeout_steps 40  \
     --unique_picker 1 --unique_rack 1 \
     --enable_rationale \
     --debug
@@ -51,8 +50,9 @@ def parse_args() -> argparse.Namespace:
 
     # Runner / environment
     parser.add_argument("--env_id", type=str, required=True, help="Gymnasium environment id.")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
-    parser.add_argument("--seed", type=int, default=0, help="Base random seed.")
+    parser.add_argument("--num_seeds", type=int, default=10, help="Number of different random seeds.")
+    parser.add_argument("--repeats_per_seed", type=int, default=1, help="Number of repeats per seed.")
+    parser.add_argument("--seed", type=int, default=0, help="Base random seed (seeds will be base, base+1, ...).")
     parser.add_argument("--max_steps", type=int, default=500, help="Maximum steps per episode.")
     parser.add_argument("--out_dir", type=str, default="outputs", help="Directory for run artifacts.")
     parser.add_argument("--render", action="store_true", help="Render the environment during execution.")
@@ -113,8 +113,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Planner: Trigger policy
-    
-
     parser.add_argument(
         "--idle_probe_gap_steps",
         type=int,
@@ -138,7 +136,6 @@ def parse_args() -> argparse.Namespace:
         help="Enforce unique rack per step among assigned requests (0/1).",
     )
 
-
     # Planner: Prompt condition
     parser.add_argument(
         "--enable_rationale",
@@ -154,7 +151,8 @@ def parse_args() -> argparse.Namespace:
 def build_runner_config(args: argparse.Namespace) -> RunnerConfig:
     return RunnerConfig(
         env_id=args.env_id,
-        num_episodes=args.episodes,
+        num_seeds=args.num_seeds,
+        repeats_per_seed=args.repeats_per_seed,
         seed=args.seed,
         max_steps=args.max_steps,
         out_dir=args.out_dir,
@@ -176,7 +174,6 @@ def build_planner_config(args: argparse.Namespace) -> SymbioticCommLLMPlannerCon
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         stage2_max_options_per_request=args.stage2_max_options_per_request,
         idle_probe_gap_steps=args.idle_probe_gap_steps,
-       
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),
         enable_rationale=args.enable_rationale,

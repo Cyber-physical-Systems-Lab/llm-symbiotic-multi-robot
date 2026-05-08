@@ -34,14 +34,25 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
         self,
         env: Any,
         planner: Any,
-        episode_idx: int,
+        seed: int,
+        repeat: int,
+        global_episode_idx: int,
         jsonl_handle: Any,
     ) -> dict[str, Any]:
-        episode_seed = None if self.config.seed is None else self.config.seed + episode_idx
+        reset_fn = getattr(planner, "reset", None)
+        if callable(reset_fn):
+            try:
+                reset_fn()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Planner '{planner.__class__.__name__}' failed to reset "
+                    f"for seed {seed}, repeat {repeat}, episode_idx {global_episode_idx}: {exc}"
+                ) from exc
+
         try:
-            env.reset(seed=episode_seed)
+            env.reset(seed=seed)
         except Exception as exc:
-            raise RuntimeError(f"Failed to reset environment for episode {episode_idx}: {exc}") from exc
+            raise RuntimeError(f"Failed to reset environment for seed {seed}, repeat {repeat}: {exc}") from exc
 
         total_reward = 0.0
         steps = 0
@@ -73,23 +84,23 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 raw_actions = planner.plan(state)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Planner '{planner.__class__.__name__}' failed at episode {episode_idx}, step {steps}: {exc}"
+                    f"Planner '{planner.__class__.__name__}' failed at seed {seed}, repeat {repeat}, step {steps}: {exc}"
                 ) from exc
 
             num_agents = int(state["meta"]["num_agents"])
             if len(raw_actions) != num_agents:
                 raise ValueError(
                     f"Planner returned {len(raw_actions)} actions for {num_agents} agents "
-                    f"at episode {episode_idx}, step {steps}."
+                    f"at seed {seed}, repeat {repeat}, step {steps}."
                 )
 
-            actions = self._sanitize_actions(raw_actions, env, episode_idx, steps)
+            actions = self._sanitize_actions(raw_actions, env, seed, repeat, steps)
 
             try:
                 _, rewards, terminateds, _, info = env.step(actions)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Environment step failed at episode {episode_idx}, step {steps}: {exc}"
+                    f"Environment step failed at seed {seed}, repeat {repeat}, step {steps}: {exc}"
                 ) from exc
 
             reward_sum = float(sum(float(reward) for reward in rewards))
@@ -126,7 +137,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 )
 
             record = {
-                "episode_idx": episode_idx,
+                "episode_idx": global_episode_idx,
+                "seed": seed,
+                "repeat": repeat,
+                "global_episode_idx": global_episode_idx,
                 "step_idx": steps,
                 "planner_schema": "non_mutualistic_partner_aware_comm_llm_v2",
                 "stage2_semantics": "ack_busy_committed_target",
@@ -186,7 +200,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             "EPISODE_TRIGGER_REASON_COUNTS\n",
             json.dumps(
                 {
-                    "episode_idx": int(episode_idx),
+                    "episode_idx": global_episode_idx,
+                    "seed": seed,
+                    "repeat": repeat,
+                    "global_episode_idx": global_episode_idx,
                     "counts": trigger_reason_counts,
                 },
                 ensure_ascii=False,
@@ -197,7 +214,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             "EPISODE_TRIGGER_REASON_STEPS_TAIL\n",
             json.dumps(
                 {
-                    "episode_idx": int(episode_idx),
+                    "episode_idx": global_episode_idx,
+                    "seed": seed,
+                    "repeat": repeat,
+                    "global_episode_idx": global_episode_idx,
                     "num_trigger_steps": int(len(trigger_reason_steps)),
                     "steps_tail": trigger_reason_steps[-8:],
                 },
@@ -207,7 +227,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
         )
 
         return {
-            "episode_idx": episode_idx,
+            "episode_idx": global_episode_idx,
+            "seed": seed,
+            "repeat": repeat,
+            "global_episode_idx": global_episode_idx,
             "steps": steps,
             "total_reward": total_reward,
             "total_deliveries": total_deliveries,
@@ -249,6 +272,52 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             "planner_schema": "non_mutualistic_partner_aware_comm_llm_v2",
             "stage2_semantics": "ack_busy_committed_target",
         }
+
+    def _sanitize_actions(
+        self,
+        actions: list[Any],
+        env: Any,
+        seed: int,
+        repeat: int,
+        step_idx: int,
+    ) -> list[int]:
+        """Convert planner output to safe integer macro actions."""
+        action_size = int(getattr(env.unwrapped, "action_size", 0))
+        sanitized: list[int] = []
+
+        for agent_idx, action in enumerate(actions):
+            safe_action = 0
+            try:
+                candidate = int(action)
+            except (TypeError, ValueError):
+                import logging
+                logging.warning(
+                    "Invalid non-integer action for agent %s at seed %s repeat %s step %s: %r. Using 0.",
+                    agent_idx + 1,
+                    seed,
+                    repeat,
+                    step_idx,
+                    action,
+                )
+                sanitized.append(0)
+                continue
+
+            if 0 <= candidate < action_size:
+                safe_action = candidate
+            else:
+                import logging
+                logging.warning(
+                    "Out-of-range action for agent %s at seed %s repeat %s step %s: %s not in [0, %s). Using 0.",
+                    agent_idx + 1,
+                    seed,
+                    repeat,
+                    step_idx,
+                    candidate,
+                    action_size,
+                )
+            sanitized.append(safe_action)
+
+        return sanitized
 
     def _count_non_mutualistic_stage2(self, comm_response: Any) -> tuple[int, int, int, int]:
         """Count ACK/BUSY-style Stage 2 outputs."""
@@ -428,8 +497,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--env_id", type=str, required=True, help="Gymnasium environment id.")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
-    parser.add_argument("--seed", type=int, default=0, help="Base random seed.")
+    parser.add_argument("--num_seeds", type=int, default=10, help="Number of different random seeds.")
+    parser.add_argument("--repeats_per_seed", type=int, default=1, help="Number of repeats per seed.")
+    parser.add_argument("--seed", type=int, default=0, help="Base random seed (seeds will be base, base+1, ...).")
     parser.add_argument("--max_steps", type=int, default=1500, help="Maximum steps per episode.")
     parser.add_argument("--out_dir", type=str, default="outputs", help="Directory for run artifacts.")
     parser.add_argument("--render", action="store_true", help="Render the environment during execution.")
@@ -478,9 +548,6 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Maximum requests handled per communication mini-batch.",
     )
-    
-    
-    
     parser.add_argument(
         "--idle_probe_gap_steps",
         type=int,
@@ -508,7 +575,8 @@ def parse_args() -> argparse.Namespace:
 def build_runner_config(args: argparse.Namespace) -> RunnerConfig:
     return RunnerConfig(
         env_id=args.env_id,
-        num_episodes=args.episodes,
+        num_seeds=args.num_seeds,
+        repeats_per_seed=args.repeats_per_seed,
         seed=args.seed,
         max_steps=args.max_steps,
         out_dir=args.out_dir,
@@ -528,8 +596,6 @@ def build_planner_config(args: argparse.Namespace) -> NonMutualisticCommLLMPlann
         stage1_pool_k=args.stage1_pool_k,
         stage2_picker_options_per_rack=args.stage2_picker_options_per_rack,
         max_requests_per_batch=args.max_requests_per_batch,
-        
-        
         idle_probe_gap_steps=args.idle_probe_gap_steps,
         unique_picker=bool(args.unique_picker),
         unique_rack=bool(args.unique_rack),

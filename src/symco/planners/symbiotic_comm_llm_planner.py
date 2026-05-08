@@ -113,6 +113,10 @@ class SymbioticCommLLMPlanner:
         self.picker_client = VLLMChatClient(vcfg)
         self.final_client = VLLMChatClient(vcfg)
 
+        self._reset_episode_state()
+
+    def _reset_episode_state(self) -> None:
+        """Reset per-episode mutable planner state without recreating LLM clients."""
         # Communication-trigger state
         self.step_counter: int = 0
         self.last_communication_step: int = -10**9
@@ -139,6 +143,10 @@ class SymbioticCommLLMPlanner:
 
         # Whole-plan fallback (rule-based symbiotic). We'll instantiate per-fallback to avoid internal state coupling.
         # self._rule_fallback = RuleSymbioticPlanner()
+
+    def reset(self) -> None:
+        """Reset per-episode planner state without recreating LLM clients."""
+        self._reset_episode_state()
 
     # ----------------------------
     # Public API

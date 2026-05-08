@@ -11,8 +11,9 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=4
-SEED=1
+NUM_SEEDS=4          # 不同随机种子的个数（原 EPISODES）
+REPEATS_PER_SEED=2   # 每个种子重复次数
+SEED=0               # 起始种子（将生成 SEED, SEED+1, ..., SEED+NUM_SEEDS-1）
 MAX_STEPS=1000
 
 OUT_DIR="outputs/night_run_20260507"
@@ -44,8 +45,9 @@ mkdir -p "${OUT_DIR}"
 echo "========================================"
 echo "Night run started"
 echo "Output directory: ${OUT_DIR}"
-echo "Episodes: ${EPISODES}"
-echo "Seed: ${SEED}"
+echo "Number of seeds: ${NUM_SEEDS}"
+echo "Repeats per seed: ${REPEATS_PER_SEED}"
+echo "Base seed: ${SEED}"
 echo "Max steps: ${MAX_STEPS}"
 echo "========================================"
 
@@ -55,7 +57,8 @@ run_symbiotic() {
   echo ">>> Running SYMBIOTIC on ${env_id}"
   python scripts/run_symbiotic_comm_llm.py \
     --env_id "${env_id}" \
-    --episodes "${EPISODES}" \
+    --num_seeds "${NUM_SEEDS}" \
+    --repeats_per_seed "${REPEATS_PER_SEED}" \
     --seed "${SEED}" \
     --max_steps "${MAX_STEPS}" \
     --out_dir "${OUT_DIR}" \
@@ -80,7 +83,8 @@ run_non_mutualistic_v2() {
   echo ">>> Running NON-MUTUALISTIC V2 on ${env_id}"
   python scripts/run_non_mutualistic_comm_llm_v2.py \
     --env_id "${env_id}" \
-    --episodes "${EPISODES}" \
+    --num_seeds "${NUM_SEEDS}" \
+    --repeats_per_seed "${REPEATS_PER_SEED}" \
     --seed "${SEED}" \
     --max_steps "${MAX_STEPS}" \
     --out_dir "${OUT_DIR}" \

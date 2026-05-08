@@ -24,7 +24,8 @@ class RunnerConfig:
     env_id: str
     max_steps: int = 500
     seed: int | None = None
-    num_episodes: int = 10
+    num_seeds: int = 10           # 不同随机种子的数量（原 num_episodes）
+    repeats_per_seed: int = 1     # 每个种子重复运行的次数（新增）
     render: bool = False
     render_mode: str = "human"
     out_dir: str = "outputs"
@@ -78,15 +79,24 @@ class EpisodeRunner:
             jsonl_handle = jsonl_path.open("w", encoding="utf-8")
 
         env = self.make_env()
+        global_episode_counter = 0
+
         try:
-            for episode_idx in range(self.config.num_episodes):
-                summary = self._run_episode(
-                    env=env,
-                    planner=planner,
-                    episode_idx=episode_idx,
-                    jsonl_handle=jsonl_handle,
-                )
-                episode_summaries.append(summary)
+            base_seed = self.config.seed if self.config.seed is not None else 0
+            seeds = [base_seed + i for i in range(self.config.num_seeds)]
+
+            for seed in seeds:
+                for repeat in range(self.config.repeats_per_seed):
+                    summary = self._run_episode(
+                        env=env,
+                        planner=planner,
+                        seed=seed,
+                        repeat=repeat,
+                        global_episode_idx=global_episode_counter,
+                        jsonl_handle=jsonl_handle,
+                    )
+                    episode_summaries.append(summary)
+                    global_episode_counter += 1
         finally:
             if jsonl_handle is not None:
                 jsonl_handle.close()
@@ -107,15 +117,27 @@ class EpisodeRunner:
         self,
         env: gym.Env,
         planner: Any,
-        episode_idx: int,
+        seed: int,
+        repeat: int,
+        global_episode_idx: int,
         jsonl_handle: Any,
     ) -> dict[str, Any]:
         """Execute a single episode and return aggregated metrics."""
-        episode_seed = None if self.config.seed is None else self.config.seed + episode_idx
+
+        reset_fn = getattr(planner, "reset", None)
+        if callable(reset_fn):
+            try:
+                reset_fn()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Planner '{planner.__class__.__name__}' failed to reset "
+                    f"for seed {seed}, repeat {repeat}, episode_idx {global_episode_idx}: {exc}"
+                ) from exc
+
         try:
-            env.reset(seed=episode_seed)
+            env.reset(seed=seed)
         except Exception as exc:
-            raise RuntimeError(f"Failed to reset environment for episode {episode_idx}: {exc}") from exc
+            raise RuntimeError(f"Failed to reset environment for seed {seed}, repeat {repeat}: {exc}") from exc
 
         total_reward = 0.0
         steps = 0
@@ -151,23 +173,23 @@ class EpisodeRunner:
                 raw_actions = planner.plan(state)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Planner '{planner.__class__.__name__}' failed at episode {episode_idx}, step {steps}: {exc}"
+                    f"Planner '{planner.__class__.__name__}' failed at seed {seed}, repeat {repeat}, step {steps}: {exc}"
                 ) from exc
 
             num_agents = int(state["meta"]["num_agents"])
             if len(raw_actions) != num_agents:
                 raise ValueError(
                     f"Planner returned {len(raw_actions)} actions for {num_agents} agents "
-                    f"at episode {episode_idx}, step {steps}."
+                    f"at seed {seed}, repeat {repeat}, step {steps}."
                 )
 
-            actions = self._sanitize_actions(raw_actions, env, episode_idx, steps)
+            actions = self._sanitize_actions(raw_actions, env, seed, repeat, steps)
 
             try:
                 _, rewards, terminateds, _, info = env.step(actions)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Environment step failed at episode {episode_idx}, step {steps}: {exc}"
+                    f"Environment step failed at seed {seed}, repeat {repeat}, step {steps}: {exc}"
                 ) from exc
 
             reward_sum = float(sum(float(reward) for reward in rewards))
@@ -210,7 +232,10 @@ class EpisodeRunner:
                 total_assigned_eta_gap += self._safe_nonnegative_int(objective_scores.get("sum_eta_gap", 0))
 
             record = {
-                "episode_idx": episode_idx,
+                "episode_idx": global_episode_idx,
+                "seed": seed,
+                "repeat": repeat,
+                "global_episode_idx": global_episode_idx,
                 "step_idx": steps,
                 "actions": actions,
                 "info": self._to_jsonable(info),
@@ -256,7 +281,10 @@ class EpisodeRunner:
         ) = self._compute_assigned_task_wait_metrics(episode_records)
 
         return {
-            "episode_idx": episode_idx,
+            "episode_idx": global_episode_idx,
+            "seed": seed,
+            "repeat": repeat,
+            "global_episode_idx": global_episode_idx,
             "steps": steps,
             "total_reward": total_reward,
             "total_deliveries": total_deliveries,
@@ -317,7 +345,8 @@ class EpisodeRunner:
         self,
         actions: list[Any],
         env: gym.Env,
-        episode_idx: int,
+        seed: int,
+        repeat: int,
         step_idx: int,
     ) -> list[int]:
         """Convert planner output to safe integer macro actions."""
@@ -330,9 +359,10 @@ class EpisodeRunner:
                 candidate = int(action)
             except (TypeError, ValueError):
                 LOGGER.warning(
-                    "Invalid non-integer action for agent %s at episode %s step %s: %r. Using 0.",
+                    "Invalid non-integer action for agent %s at seed %s repeat %s step %s: %r. Using 0.",
                     agent_idx + 1,
-                    episode_idx,
+                    seed,
+                    repeat,
                     step_idx,
                     action,
                 )
@@ -343,9 +373,10 @@ class EpisodeRunner:
                 safe_action = candidate
             else:
                 LOGGER.warning(
-                    "Out-of-range action for agent %s at episode %s step %s: %s not in [0, %s). Using 0.",
+                    "Out-of-range action for agent %s at seed %s repeat %s step %s: %s not in [0, %s). Using 0.",
                     agent_idx + 1,
-                    episode_idx,
+                    seed,
+                    repeat,
                     step_idx,
                     candidate,
                     action_size,
@@ -360,7 +391,11 @@ class EpisodeRunner:
         env_name = self.config.env_id.replace("/", "_").replace(":", "_")
         env_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in env_name)
         planner_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in planner_name)
-        return f"{timestamp}_{env_name}_{planner_name}"
+        repeats_str = f"repeats{self.config.repeats_per_seed}" if self.config.repeats_per_seed > 1 else ""
+        seed_range_str = f"seeds{self.config.num_seeds}"
+        if repeats_str:
+            return f"{timestamp}_{env_name}_{planner_name}_{seed_range_str}_{repeats_str}"
+        return f"{timestamp}_{env_name}_{planner_name}_{seed_range_str}"
 
     def _extract_comm_payload(self, planner: Any) -> dict[str, Any]:
         """Extract optional communication artifacts from a planner."""
@@ -628,7 +663,6 @@ class EpisodeRunner:
                 total_wait_completed += wait_steps
 
         for idx, record in enumerate(records):
-            step_idx = self._safe_nonnegative_int(record.get("step_idx", idx))
             agents_by_id = self._extract_agents_by_id(record.get("state_min"))
             purpose_by_request = self._extract_request_purpose_map(record.get("comm_request"))
             rack_coords_yx_by_id = self._extract_location_coords_yx_map(record.get("state_min"))
@@ -661,7 +695,6 @@ class EpisodeRunner:
                     "purpose": str(purpose),
                     "picker_id": int(picker_id),
                     "rack_id": int(rack_id),
-                    "start_step": int(step_idx),
                     "wait_steps": 0,
                 }
 
@@ -858,7 +891,8 @@ class EpisodeRunner:
 if __name__ == "__main__":
     config = RunnerConfig(
         env_id="tarware-small-2agvs-2pickers-partialobs-v1",
-        num_episodes=2,
+        num_seeds=2,
+        repeats_per_seed=3,
         seed=0,
     )
     runner = EpisodeRunner(config)

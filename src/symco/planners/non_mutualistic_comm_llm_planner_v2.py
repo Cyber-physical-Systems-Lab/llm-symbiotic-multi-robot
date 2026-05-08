@@ -36,6 +36,10 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         # This baseline never uses rationale.
         self.enable_rationale = False
 
+    def reset(self) -> None:
+        """Reset per-episode planner state without recreating LLM clients."""
+        super().reset()
+
     # ----------------------------
     # Main planning loop
     # ----------------------------
