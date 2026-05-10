@@ -180,15 +180,23 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
 
         total_cooperative_waiting_time = self._compute_cooperative_waiting_time(episode_records)
         cooperative_attempts = self._count_cooperative_attempts(episode_records)
+
         (
             completed_assigned_task_count,
             total_assigned_task_completion_time,
         ) = self._compute_assigned_task_completion_metrics(episode_records)
+
+        (
+            all_assigned_task_count_for_exec,
+            total_assigned_task_execution_time_all,
+        ) = self._compute_assigned_task_execution_time_all(episode_records)
+
         (
             completed_assigned_task_count_for_wait,
             total_assigned_target_wait_time_all,
             total_assigned_target_wait_time_completed,
         ) = self._compute_assigned_task_wait_metrics(episode_records)
+
         trigger_reason_counts = getattr(planner, "trigger_reason_counts", {})
         if not isinstance(trigger_reason_counts, dict):
             trigger_reason_counts = {}
@@ -259,6 +267,9 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             ),
             "avg_execution_time_per_assignment": self._safe_ratio(
                 total_assigned_task_completion_time, completed_assigned_task_count
+            ),
+            "avg_execution_time_all": self._safe_ratio(
+                total_assigned_task_execution_time_all, all_assigned_task_count_for_exec
             ),
             "avg_wait_time_all_assignments": self._safe_ratio(
                 total_assigned_target_wait_time_all, assigned_cooperative_tasks
@@ -651,6 +662,10 @@ def main() -> int:
     print(
         "mean_avg_execution_time_per_assignment: "
         f"{mean_metric(episode_summaries, 'avg_execution_time_per_assignment'):.3f}"
+    )
+    print(
+        "mean_avg_execution_time_all: "
+        f"{mean_metric(episode_summaries, 'avg_execution_time_all'):.3f}"
     )
     print(
         "mean_avg_wait_time_all_assignments: "

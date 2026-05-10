@@ -158,7 +158,7 @@ class EpisodeRunner:
         zero_option_unreachable = 0
         zero_option_no_idle_picker = 0
 
-        # New: assignment-level quality metrics accumulated from comm_final_plan.objective_scores
+        # Assignment-level quality metrics accumulated from comm_final_plan.objective_scores
         assigned_cooperative_tasks = 0
         total_assigned_sync_cost = 0
         total_assigned_eta_gap = 0
@@ -224,7 +224,6 @@ class EpisodeRunner:
             zero_option_unreachable += int(comm_diagnostics["zero_option_unreachable"])
             zero_option_no_idle_picker += int(comm_diagnostics["zero_option_no_idle_picker"])
 
-            # New: accumulate assignment-level quality metrics from objective_scores
             objective_scores = self._extract_objective_scores(comm_payload["comm_final_plan"])
             if objective_scores is not None:
                 assigned_cooperative_tasks += self._safe_nonnegative_int(objective_scores.get("num_assignments", 0))
@@ -262,6 +261,7 @@ class EpisodeRunner:
                 "multi_option_recommend_count": multi_option_recommend_count,
             }
             episode_records.append(record)
+
             if jsonl_handle is not None:
                 jsonl_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
@@ -274,6 +274,12 @@ class EpisodeRunner:
             completed_assigned_task_count,
             total_assigned_task_completion_time,
         ) = self._compute_assigned_task_completion_metrics(episode_records)
+
+        (
+            all_assigned_task_count_for_exec,
+            total_assigned_task_execution_time_all,
+        ) = self._compute_assigned_task_execution_time_all(episode_records)
+
         (
             completed_assigned_task_count_for_wait,
             total_assigned_target_wait_time_all,
@@ -322,6 +328,11 @@ class EpisodeRunner:
             "avg_execution_time_per_assignment": (
                 float(total_assigned_task_completion_time) / float(completed_assigned_task_count)
                 if completed_assigned_task_count > 0
+                else 0.0
+            ),
+            "avg_execution_time_all": (
+                float(total_assigned_task_execution_time_all) / float(all_assigned_task_count_for_exec)
+                if all_assigned_task_count_for_exec > 0
                 else 0.0
             ),
             "avg_wait_time_all_assignments": (
@@ -640,6 +651,106 @@ class EpisodeRunner:
                 }
 
         return completed_task_count, total_completion_time
+
+    def _compute_assigned_task_execution_time_all(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        """
+        Compute execution time over all assigned cooperative tasks.
+
+        Completed tasks are finalized when the AGV carrying state changes:
+        - LOAD completes when AGV becomes carrying=True
+        - UNLOAD completes when AGV becomes carrying=False
+
+        Unfinished tasks are finalized at episode end, so long-running assignments
+        are included in the average.
+        """
+        active_tasks_by_agv: dict[int, dict[str, Any]] = {}
+        finalized_task_count = 0
+        total_execution_time_all = 0
+
+        if not records:
+            return 0, 0
+
+        final_step = self._safe_nonnegative_int(records[-1].get("step_idx", len(records) - 1)) + 1
+
+        def finalize_task(agv_id: int, end_step: int) -> None:
+            nonlocal finalized_task_count, total_execution_time_all
+            task = active_tasks_by_agv.pop(int(agv_id), None)
+            if task is None:
+                return
+            start_step = int(task.get("start_step", end_step))
+            duration = int(end_step) - int(start_step)
+            if duration < 0:
+                duration = 0
+            finalized_task_count += 1
+            total_execution_time_all += int(duration)
+
+        for idx, record in enumerate(records):
+            step_idx = self._safe_nonnegative_int(record.get("step_idx", idx))
+            carrying_by_agv = self._extract_agv_carrying_by_id(record.get("state_min"))
+
+            for agv_id, task in list(active_tasks_by_agv.items()):
+                carrying = carrying_by_agv.get(int(agv_id))
+                if carrying is None:
+                    continue
+                purpose = str(task.get("purpose", "")).upper()
+                completed = (
+                    (purpose == "LOAD" and carrying)
+                    or (purpose == "UNLOAD" and not carrying)
+                )
+                if completed:
+                    finalize_task(int(agv_id), int(step_idx))
+
+            comm_final_plan = record.get("comm_final_plan")
+            if not isinstance(comm_final_plan, dict):
+                continue
+
+            assignments = comm_final_plan.get("assignments", [])
+            if not isinstance(assignments, list):
+                continue
+
+            purpose_by_request = self._extract_request_purpose_map(record.get("comm_request"))
+
+            for assignment in assignments:
+                if not isinstance(assignment, dict):
+                    continue
+
+                agv_id = self._safe_int(assignment.get("agv_id", 0))
+                picker_id = self._safe_int(assignment.get("picker_id", 0))
+                rack_id = self._safe_int(assignment.get("rack_id", 0))
+                request_id = assignment.get("request_id")
+
+                if agv_id <= 0 or picker_id <= 0 or rack_id <= 0 or not isinstance(request_id, str):
+                    continue
+
+                purpose = str(purpose_by_request.get(request_id, "")).upper()
+                if purpose not in {"LOAD", "UNLOAD"}:
+                    carrying = carrying_by_agv.get(int(agv_id))
+                    if carrying is None:
+                        continue
+                    purpose = "UNLOAD" if carrying else "LOAD"
+
+                signature = (str(request_id), int(picker_id), int(rack_id), str(purpose))
+                existing_task = active_tasks_by_agv.get(int(agv_id))
+
+                if existing_task is not None and existing_task.get("signature") == signature:
+                    continue
+
+                if existing_task is not None and existing_task.get("signature") != signature:
+                    finalize_task(int(agv_id), int(step_idx))
+
+                active_tasks_by_agv[int(agv_id)] = {
+                    "signature": signature,
+                    "purpose": str(purpose),
+                    "start_step": int(step_idx),
+                }
+
+        for agv_id in list(active_tasks_by_agv.keys()):
+            finalize_task(int(agv_id), int(final_step))
+
+        return finalized_task_count, total_execution_time_all
 
     def _compute_assigned_task_wait_metrics(
         self,
