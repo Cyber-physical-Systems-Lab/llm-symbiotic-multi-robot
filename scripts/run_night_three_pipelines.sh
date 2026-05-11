@@ -12,7 +12,7 @@ ENV_IDS=(
 )
 
 NUM_SEEDS=5          # 不同随机种子的个数（原 EPISODES）
-REPEATS_PER_SEED=2   # 每个种子重复次数
+REPEATS_PER_SEED=3   # 每个种子重复次数
 SEED=0               # 起始种子（将生成 SEED, SEED+1, ..., SEED+NUM_SEEDS-1）
 MAX_STEPS=1000
 
