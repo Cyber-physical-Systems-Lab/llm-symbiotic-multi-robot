@@ -35,10 +35,99 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         super().__init__(config or NonMutualisticCommLLMPlannerV2Config())
         # This baseline never uses rationale.
         self.enable_rationale = False
+        self._reset_unload_deadlock_debug_state()
+
+    def _reset_unload_deadlock_debug_state(self) -> None:
+        """Reset simple UNLOAD/empty-rack deadlock debug counters."""
+        self.last_debug_idle_unload_agv_count = 0
+        self.last_debug_empty_rack_count = 0
+        self.last_debug_actionable_unload_agv_count = 0
+        self.last_debug_suspected_unload_deadlock = False
+
+        self.suspected_unload_deadlock_steps = 0
+        self.suspected_unload_deadlock_ge10_events = 0
+        self._current_suspected_unload_deadlock_streak = 0
 
     def reset(self) -> None:
         """Reset per-episode planner state without recreating LLM clients."""
         super().reset()
+        self._reset_unload_deadlock_debug_state()
+
+    def _update_simple_unload_deadlock_debug(self, state: dict[str, Any]) -> None:
+        agents = self._sorted_agents(state)
+        valid_masks = state.get("valid_action_masks", [])
+        empty_racks = [
+            int(x)
+            for x in state.get("empty_rack_ids_topk", [])
+            if self._safe_int(x) > 0
+        ]
+
+        agv_index_by_id = {
+            int(agent["id"]): idx
+            for idx, agent in enumerate(agents)
+            if isinstance(agent, dict) and agent.get("type") == "AGV"
+        }
+
+        idle_unload_agv_count = 0
+        actionable_unload_agv_count = 0
+
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            if agent.get("type") != "AGV":
+                continue
+            if bool(agent.get("busy", False)):
+                continue
+            if int(agent.get("target", 0) or 0) != 0:
+                continue
+
+            carrying = bool(agent.get("carrying", False))
+            has_delivered = bool(agent.get("has_delivered", False))
+
+            if not (carrying and has_delivered):
+                continue
+
+            idle_unload_agv_count += 1
+
+            agv_id = int(agent["id"])
+            agent_index = agv_index_by_id.get(agv_id, -1)
+            cost_map = self._agent_cost_map(state, "agv", agv_id)
+
+            has_valid_empty = False
+            for rack_id in empty_racks:
+                rack_id = int(rack_id)
+
+                if agent_index >= 0 and not self._is_valid_action(valid_masks, agent_index, rack_id):
+                    continue
+
+                eta_agv = self._safe_cost(cost_map, rack_id)
+                if eta_agv is None:
+                    continue
+
+                has_valid_empty = True
+                break
+
+            if has_valid_empty:
+                actionable_unload_agv_count += 1
+
+        suspected = (
+            idle_unload_agv_count > 0
+            and len(empty_racks) > 0
+            and actionable_unload_agv_count == 0
+        )
+
+        self.last_debug_idle_unload_agv_count = int(idle_unload_agv_count)
+        self.last_debug_empty_rack_count = int(len(empty_racks))
+        self.last_debug_actionable_unload_agv_count = int(actionable_unload_agv_count)
+        self.last_debug_suspected_unload_deadlock = bool(suspected)
+
+        if suspected:
+            self.suspected_unload_deadlock_steps += 1
+            self._current_suspected_unload_deadlock_streak += 1
+            if self._current_suspected_unload_deadlock_streak == 10:
+                self.suspected_unload_deadlock_ge10_events += 1
+        else:
+            self._current_suspected_unload_deadlock_streak = 0
 
     # ----------------------------
     # Main planning loop
@@ -54,6 +143,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
         self.planner_throttled_by_budget = False
         self._update_active_assignments_from_state(state)
+        self._update_simple_unload_deadlock_debug(state)
 
         if not self._should_trigger_communication(state):
             self.last_communication_triggered = False

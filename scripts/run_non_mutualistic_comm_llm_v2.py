@@ -163,6 +163,10 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 "planner_has_request": comm_payload["planner_has_request"],
                 "planner_has_response": comm_payload["planner_has_response"],
                 "planner_has_final_plan": comm_payload["planner_has_final_plan"],
+                "debug_idle_unload_agv_count": getattr(planner, "last_debug_idle_unload_agv_count", 0),
+                "debug_empty_rack_count": getattr(planner, "last_debug_empty_rack_count", 0),
+                "debug_actionable_unload_agv_count": getattr(planner, "last_debug_actionable_unload_agv_count", 0),
+                "debug_suspected_unload_deadlock": getattr(planner, "last_debug_suspected_unload_deadlock", False),
                 "ack_count": ack_count,
                 "busy_count": busy_count,
                 "picker_candidate_total": picker_candidate_total,
@@ -257,6 +261,12 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             "cooperative_attempts": cooperative_attempts,
             "avg_cooperative_waiting_time": self._safe_ratio(
                 total_cooperative_waiting_time, cooperative_attempts
+            ),
+            "suspected_unload_deadlock_steps": int(
+                getattr(planner, "suspected_unload_deadlock_steps", 0)
+            ),
+            "suspected_unload_deadlock_ge10_events": int(
+                getattr(planner, "suspected_unload_deadlock_ge10_events", 0)
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
             "avg_planned_sync_cost": self._safe_ratio(
