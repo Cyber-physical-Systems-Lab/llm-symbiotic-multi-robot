@@ -16,7 +16,7 @@ REPEATS_PER_SEED=3   # 每个种子重复次数
 SEED=0               # 起始种子（将生成 SEED, SEED+1, ..., SEED+NUM_SEEDS-1）
 MAX_STEPS=1000
 
-OUT_DIR="outputs/night_run_20260512"
+OUT_DIR="outputs/night_run_20260519"
 
 TOPK_REQUESTS=10
 TOPK_EMPTY=10
