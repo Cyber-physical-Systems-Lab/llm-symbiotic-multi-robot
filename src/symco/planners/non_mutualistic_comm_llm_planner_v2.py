@@ -43,15 +43,55 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         self.last_debug_empty_rack_count = 0
         self.last_debug_actionable_unload_agv_count = 0
         self.last_debug_suspected_unload_deadlock = False
+        self.last_debug_idle_unload_on_storage_cell_count = 0
+        self.last_debug_idle_unload_on_excluded_cell_count = 0
+        self.last_debug_idle_unload_on_current_cell_not_in_empty_topk_count = 0
+        self.last_debug_idle_unload_on_current_cell_invalid_action_count = 0
+        self.last_debug_idle_unload_on_excluded_cell_examples = []
 
         self.suspected_unload_deadlock_steps = 0
         self.suspected_unload_deadlock_ge10_events = 0
         self._current_suspected_unload_deadlock_streak = 0
+        self.idle_unload_on_excluded_cell_steps = 0
+        self.idle_unload_on_excluded_cell_ge10_events = 0
+        self._current_idle_unload_on_excluded_cell_streak = 0
 
     def reset(self) -> None:
         """Reset per-episode planner state without recreating LLM clients."""
         super().reset()
         self._reset_unload_deadlock_debug_state()
+
+    def _location_id_by_coords_yx(self, state: dict[str, Any]) -> dict[tuple[int, int], int]:
+        """
+        Build a mapping from agent coords_yx to action/location id.
+
+        The state key location_coords_xy is expected to store coordinates as [x, y],
+        while agent state uses coords_yx. Convert [x, y] -> (y, x).
+        """
+        location_coords_xy = state.get("location_coords_xy", {})
+        if not isinstance(location_coords_xy, dict):
+            return {}
+
+        mapping: dict[tuple[int, int], int] = {}
+        for raw_loc_id, raw_coords in location_coords_xy.items():
+            loc_id = self._safe_int(raw_loc_id)
+            if loc_id <= 0:
+                continue
+            if not isinstance(raw_coords, (list, tuple)) or len(raw_coords) < 2:
+                continue
+            x = self._safe_int(raw_coords[0])
+            y = self._safe_int(raw_coords[1])
+            mapping[(int(y), int(x))] = int(loc_id)
+
+        return mapping
+
+    def _normalize_coords_yx_debug(self, value: Any) -> tuple[int, int] | None:
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return int(value[0]), int(value[1])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _update_simple_unload_deadlock_debug(self, state: dict[str, Any]) -> None:
         agents = self._sorted_agents(state)
@@ -67,9 +107,21 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             for idx, agent in enumerate(agents)
             if isinstance(agent, dict) and agent.get("type") == "AGV"
         }
+        location_id_by_yx = self._location_id_by_coords_yx(state)
+        goal_ids = {
+            self._safe_int(x)
+            for x in state.get("goal_ids", [])
+            if self._safe_int(x) > 0
+        }
+        empty_rack_set = set(int(x) for x in empty_racks)
 
         idle_unload_agv_count = 0
         actionable_unload_agv_count = 0
+        idle_unload_on_storage_cell_count = 0
+        idle_unload_on_excluded_cell_count = 0
+        current_cell_not_in_empty_topk_count = 0
+        current_cell_invalid_action_count = 0
+        excluded_examples: list[dict[str, Any]] = []
 
         for agent in agents:
             if not isinstance(agent, dict):
@@ -92,6 +144,43 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             agv_id = int(agent["id"])
             agent_index = agv_index_by_id.get(agv_id, -1)
             cost_map = self._agent_cost_map(state, "agv", agv_id)
+            coords_yx = self._normalize_coords_yx_debug(agent.get("coords_yx"))
+            current_loc_id = 0
+            if coords_yx is not None:
+                current_loc_id = int(location_id_by_yx.get(coords_yx, 0))
+
+            if current_loc_id > 0 and current_loc_id not in goal_ids:
+                idle_unload_on_storage_cell_count += 1
+
+                current_in_empty_topk = int(current_loc_id) in empty_rack_set
+
+                current_valid_action = False
+                if agent_index >= 0:
+                    current_valid_action = bool(
+                        self._is_valid_action(valid_masks, agent_index, int(current_loc_id))
+                    )
+
+                if not current_in_empty_topk:
+                    current_cell_not_in_empty_topk_count += 1
+
+                if not current_valid_action:
+                    current_cell_invalid_action_count += 1
+
+                current_excluded = (not current_in_empty_topk) or (not current_valid_action)
+
+                if current_excluded:
+                    idle_unload_on_excluded_cell_count += 1
+                    if len(excluded_examples) < 5:
+                        excluded_examples.append(
+                            {
+                                "agv_id": int(agv_id),
+                                "coords_yx": list(coords_yx) if coords_yx is not None else None,
+                                "current_loc_id": int(current_loc_id),
+                                "current_in_empty_topk": bool(current_in_empty_topk),
+                                "current_valid_action": bool(current_valid_action),
+                                "empty_rack_count": int(len(empty_racks)),
+                            }
+                        )
 
             has_valid_empty = False
             for rack_id in empty_racks:
@@ -120,6 +209,19 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         self.last_debug_empty_rack_count = int(len(empty_racks))
         self.last_debug_actionable_unload_agv_count = int(actionable_unload_agv_count)
         self.last_debug_suspected_unload_deadlock = bool(suspected)
+        self.last_debug_idle_unload_on_storage_cell_count = int(idle_unload_on_storage_cell_count)
+        self.last_debug_idle_unload_on_excluded_cell_count = int(idle_unload_on_excluded_cell_count)
+        self.last_debug_idle_unload_on_current_cell_not_in_empty_topk_count = int(current_cell_not_in_empty_topk_count)
+        self.last_debug_idle_unload_on_current_cell_invalid_action_count = int(current_cell_invalid_action_count)
+        self.last_debug_idle_unload_on_excluded_cell_examples = excluded_examples
+
+        if idle_unload_on_excluded_cell_count > 0:
+            self.idle_unload_on_excluded_cell_steps += 1
+            self._current_idle_unload_on_excluded_cell_streak += 1
+            if self._current_idle_unload_on_excluded_cell_streak == 10:
+                self.idle_unload_on_excluded_cell_ge10_events += 1
+        else:
+            self._current_idle_unload_on_excluded_cell_streak = 0
 
         if suspected:
             self.suspected_unload_deadlock_steps += 1

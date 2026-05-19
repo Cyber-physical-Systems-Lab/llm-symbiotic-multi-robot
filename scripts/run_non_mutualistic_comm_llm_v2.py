@@ -167,6 +167,21 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 "debug_empty_rack_count": getattr(planner, "last_debug_empty_rack_count", 0),
                 "debug_actionable_unload_agv_count": getattr(planner, "last_debug_actionable_unload_agv_count", 0),
                 "debug_suspected_unload_deadlock": getattr(planner, "last_debug_suspected_unload_deadlock", False),
+                "debug_idle_unload_on_storage_cell_count": getattr(
+                    planner, "last_debug_idle_unload_on_storage_cell_count", 0
+                ),
+                "debug_idle_unload_on_excluded_cell_count": getattr(
+                    planner, "last_debug_idle_unload_on_excluded_cell_count", 0
+                ),
+                "debug_idle_unload_on_current_cell_not_in_empty_topk_count": getattr(
+                    planner, "last_debug_idle_unload_on_current_cell_not_in_empty_topk_count", 0
+                ),
+                "debug_idle_unload_on_current_cell_invalid_action_count": getattr(
+                    planner, "last_debug_idle_unload_on_current_cell_invalid_action_count", 0
+                ),
+                "debug_idle_unload_on_excluded_cell_examples": getattr(
+                    planner, "last_debug_idle_unload_on_excluded_cell_examples", []
+                ),
                 "ack_count": ack_count,
                 "busy_count": busy_count,
                 "picker_candidate_total": picker_candidate_total,
@@ -267,6 +282,12 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             ),
             "suspected_unload_deadlock_ge10_events": int(
                 getattr(planner, "suspected_unload_deadlock_ge10_events", 0)
+            ),
+            "idle_unload_on_excluded_cell_steps": int(
+                getattr(planner, "idle_unload_on_excluded_cell_steps", 0)
+            ),
+            "idle_unload_on_excluded_cell_ge10_events": int(
+                getattr(planner, "idle_unload_on_excluded_cell_ge10_events", 0)
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
             "avg_planned_sync_cost": self._safe_ratio(
