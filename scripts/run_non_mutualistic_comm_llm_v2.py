@@ -151,6 +151,7 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                     "agents": state["agents"],
                     "requests_rack_ids_topk": state["requests_rack_ids_topk"],
                     "empty_rack_ids_topk": state["empty_rack_ids_topk"],
+                    "self_blocking_unload_targets": state.get("self_blocking_unload_targets", []),
                     "goal_ids": state["goal_ids"],
                     "location_coords_xy": state.get("location_coords_xy", {}),
                 },
