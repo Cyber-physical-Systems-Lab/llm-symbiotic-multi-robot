@@ -364,6 +364,24 @@ class Warehouse(gym.Env):
             if not agent.busy:
                 agent.target = 0
                 if macro_action != 0:
+                    target_yx = self.action_id_to_coords_map.get(macro_action)
+                    if (
+                        target_yx is not None
+                        and agent.type in [AgentType.AGV, AgentType.AGENT]
+                        and agent.carrying_shelf
+                        and agent.has_delivered
+                        and int(target_yx[0]) == int(agent.y)
+                        and int(target_yx[1]) == int(agent.x)
+                        and not self._is_highway(agent.x, agent.y)
+                        and (agent.x, agent.y) not in self.goals
+                        and self.grid[CollisionLayers.SHELVES, agent.y, agent.x] == 0
+                    ):
+                        agent.path = []
+                        agent.busy = True
+                        agent.target = int(macro_action)
+                        agent.req_action = Action.TOGGLE_LOAD
+                        self.stuck_counters[agent.id - 1].reset((agent.x, agent.y))
+                        continue
                     agent.path = self.find_path((agent.y, agent.x), self.action_id_to_coords_map[macro_action], agent, care_for_agents=False)
                     if agent.path:
                         agent.busy = True

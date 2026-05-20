@@ -182,6 +182,9 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 "debug_idle_unload_on_excluded_cell_examples": getattr(
                     planner, "last_debug_idle_unload_on_excluded_cell_examples", []
                 ),
+                "debug_self_blocking_unload_recovery": getattr(
+                    planner, "last_debug_self_blocking_unload_recovery", False
+                ),
                 "ack_count": ack_count,
                 "busy_count": busy_count,
                 "picker_candidate_total": picker_candidate_total,
@@ -288,6 +291,15 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             ),
             "idle_unload_on_excluded_cell_ge10_events": int(
                 getattr(planner, "idle_unload_on_excluded_cell_ge10_events", 0)
+            ),
+            "self_blocking_unload_recovery_steps": int(
+                getattr(planner, "self_blocking_unload_recovery_steps", 0)
+            ),
+            "self_blocking_unload_recovery_with_existing_picker": int(
+                getattr(planner, "self_blocking_unload_recovery_with_existing_picker", 0)
+            ),
+            "self_blocking_unload_recovery_via_comm": int(
+                getattr(planner, "self_blocking_unload_recovery_via_comm", 0)
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
             "avg_planned_sync_cost": self._safe_ratio(

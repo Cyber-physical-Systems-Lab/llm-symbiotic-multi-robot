@@ -55,6 +55,10 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         self.idle_unload_on_excluded_cell_steps = 0
         self.idle_unload_on_excluded_cell_ge10_events = 0
         self._current_idle_unload_on_excluded_cell_streak = 0
+        self.self_blocking_unload_recovery_steps = 0
+        self.self_blocking_unload_recovery_with_existing_picker = 0
+        self.self_blocking_unload_recovery_via_comm = 0
+        self.last_debug_self_blocking_unload_recovery = False
 
     def reset(self) -> None:
         """Reset per-episode planner state without recreating LLM clients."""
@@ -231,6 +235,123 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         else:
             self._current_suspected_unload_deadlock_streak = 0
 
+    def _has_self_blocking_unload_targets(self, state: dict[str, Any]) -> bool:
+        targets = state.get("self_blocking_unload_targets", [])
+        return any(isinstance(item, dict) for item in targets)
+
+    def _augment_batch_requests_with_self_blocking_unload_targets(
+        self,
+        state: dict[str, Any],
+        batch_requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        targets_by_agv: dict[int, int] = {}
+        for item in state.get("self_blocking_unload_targets", []):
+            if not isinstance(item, dict):
+                continue
+            agv_id = self._safe_int(item.get("agv_id"))
+            loc_id = self._safe_int(item.get("loc_id"))
+            if agv_id > 0 and loc_id > 0 and agv_id not in targets_by_agv:
+                targets_by_agv[int(agv_id)] = int(loc_id)
+
+        if not targets_by_agv:
+            return list(batch_requests)
+
+        augmented: list[dict[str, Any]] = []
+        consumed_agv_ids: set[int] = set()
+
+        for req in batch_requests:
+            if not isinstance(req, dict):
+                continue
+
+            agv_id = self._safe_int(req.get("agv_id"))
+            loc_id = targets_by_agv.get(int(agv_id))
+
+            if agv_id > 0 and loc_id is not None:
+                augmented.append(
+                    {
+                        "request_id": f"self_blocking_unload_agv{agv_id}_loc{loc_id}",
+                        "agv_id": int(agv_id),
+                        "purpose": "UNLOAD",
+                        "candidate_pool": [int(loc_id)],
+                        "self_blocking_unload": True,
+                        "self_blocking_unload_loc_id": int(loc_id),
+                    }
+                )
+                consumed_agv_ids.add(int(agv_id))
+            else:
+                augmented.append(req)
+
+        for agv_id, loc_id in targets_by_agv.items():
+            if int(agv_id) in consumed_agv_ids:
+                continue
+            augmented.append(
+                {
+                    "request_id": f"self_blocking_unload_agv{agv_id}_loc{loc_id}",
+                    "agv_id": int(agv_id),
+                    "purpose": "UNLOAD",
+                    "candidate_pool": [int(loc_id)],
+                    "self_blocking_unload": True,
+                    "self_blocking_unload_loc_id": int(loc_id),
+                }
+            )
+
+        return augmented
+
+    def _build_self_blocking_unload_recovery_actions(
+        self,
+        state: dict[str, Any],
+    ) -> list[int] | None:
+        targets = state.get("self_blocking_unload_targets", [])
+        if not isinstance(targets, list) or not targets:
+            return None
+
+        agents = self._sorted_agents(state)
+        valid_masks = state.get("valid_action_masks", [])
+        agent_index_by_id = {
+            int(agent["id"]): idx
+            for idx, agent in enumerate(agents)
+            if isinstance(agent, dict) and "id" in agent
+        }
+        picker_by_target: dict[int, dict[str, Any]] = {}
+        for agent in agents:
+            if not isinstance(agent, dict) or agent.get("type") != "PICKER":
+                continue
+            target = self._safe_int(agent.get("target"))
+            if target > 0 and target not in picker_by_target:
+                picker_by_target[int(target)] = agent
+
+        matched_targets: list[tuple[int, int, dict[str, Any]]] = []
+        for item in targets:
+            if not isinstance(item, dict):
+                continue
+            agv_id = self._safe_int(item.get("agv_id"))
+            loc_id = self._safe_int(item.get("loc_id"))
+            picker_state = picker_by_target.get(int(loc_id))
+            if agv_id > 0 and loc_id > 0 and isinstance(picker_state, dict):
+                matched_targets.append((int(agv_id), int(loc_id), picker_state))
+
+        if not matched_targets:
+            return None
+
+        actions = self._assemble_actions_from_assignments(state, assignments=[])
+        num_agents = len(actions)
+        for agv_id, loc_id, picker_state in matched_targets:
+            if 1 <= agv_id <= num_agents:
+                actions[agv_id - 1] = int(loc_id)
+
+            picker_id = self._safe_int(picker_state.get("id"))
+            picker_index = agent_index_by_id.get(int(picker_id), -1)
+            if (
+                picker_id > 0
+                and 1 <= picker_id <= num_agents
+                and not bool(picker_state.get("busy", False))
+                and picker_index >= 0
+                and self._is_valid_action(valid_masks, picker_index, int(loc_id))
+            ):
+                actions[picker_id - 1] = int(loc_id)
+
+        return actions
+
     # ----------------------------
     # Main planning loop
     # ----------------------------
@@ -244,10 +365,24 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             self.region_to_racks = state.get("region_to_racks", {})
 
         self.planner_throttled_by_budget = False
+        self.last_debug_self_blocking_unload_recovery = False
         self._update_active_assignments_from_state(state)
         self._update_simple_unload_deadlock_debug(state)
 
-        if not self._should_trigger_communication(state):
+        recovery_actions = self._build_self_blocking_unload_recovery_actions(state)
+        if recovery_actions is not None:
+            self.last_communication_triggered = False
+            self.last_used_fallback = False
+            self.last_request = None
+            self.last_response = None
+            self.last_final_plan = None
+            self.last_debug_self_blocking_unload_recovery = True
+            self.self_blocking_unload_recovery_steps += 1
+            self.self_blocking_unload_recovery_with_existing_picker += 1
+            return recovery_actions
+
+        force_comm_for_self_blocking = self._has_self_blocking_unload_targets(state)
+        if not force_comm_for_self_blocking and not self._should_trigger_communication(state):
             self.last_communication_triggered = False
             self.last_used_fallback = False
             self.last_request = None
@@ -264,8 +399,12 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
         self.last_communication_triggered = True
         self.last_used_fallback = False
+        if force_comm_for_self_blocking:
+            self.last_debug_self_blocking_unload_recovery = True
+            self.self_blocking_unload_recovery_via_comm += 1
 
         batch_requests = self._build_batch_requests(state)
+        batch_requests = self._augment_batch_requests_with_self_blocking_unload_targets(state, batch_requests)
         if not batch_requests:
             self.last_request = _DictMessage({"requests": []})
             self.last_response = _DictMessage({"responses": []})
@@ -543,7 +682,13 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         - eta_agv
         - region_load
         - coarse partner awareness:
-          idle_pickers, picker_scarcity, nearby_idle_pickers
+        idle_pickers, picker_scarcity, nearby_idle_pickers
+
+        Special case:
+        - For self-blocking unload requests, allow exactly the AGV's current
+        self-blocking loc_id as a special candidate even if valid_action_masks
+        marks it invalid. This is needed because the AGV may already be standing
+        on the storage cell while carrying a delivered shelf.
         """
         reserved_rack_ids = set() if reserved_rack_ids is None else {int(x) for x in reserved_rack_ids}
         reserved_agv_ids = set() if reserved_agv_ids is None else {int(x) for x in reserved_agv_ids}
@@ -552,6 +697,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         agents = self._sorted_agents(state)
         protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
         protected_picker_ids = {int(picker_id) for picker_id in protected_picker_bindings.values()}
+
         idle_agvs = sum(
             1
             for agent in agents
@@ -559,24 +705,27 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
             and not bool(agent.get("busy", False))
             and int(agent["id"]) not in reserved_agv_ids
         )
+
         active_reserved_picker_ids = {
             int(assignment.get("picker_id", -1))
             for assignment in self.active_assignments.values()
             if isinstance(assignment, dict) and self._safe_int(assignment.get("picker_id")) > 0
         }
+
         idle_pickers = sum(
             1
             for agent in agents
-            if agent.get("type") == "PICKER" and not bool(agent.get("busy", False))
+            if agent.get("type") == "PICKER"
+            and not bool(agent.get("busy", False))
             and int(agent["id"]) not in active_reserved_picker_ids
             and int(agent["id"]) not in protected_picker_ids
             and int(agent["id"]) not in reserved_picker_ids
         )
+
         picker_scarcity = "high" if idle_pickers <= 1 else "low"
 
         region_load = self._compute_region_load()
         valid_masks = state.get("valid_action_masks", [])
-        
 
         agv_index_by_id: dict[int, int] = {}
         for idx, agent in enumerate(agents):
@@ -584,20 +733,64 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 agv_index_by_id[int(agent["id"])] = idx
 
         requests_payload: list[dict[str, Any]] = []
+
         for req in batch_requests:
-            agv_id = int(req["agv_id"])
-            pool = [int(x) for x in req["candidate_pool"]]
+            if not isinstance(req, dict):
+                continue
+
+            agv_id = self._safe_int(req.get("agv_id"))
+            if agv_id <= 0:
+                continue
+
+            pool = [
+                int(x)
+                for x in req.get("candidate_pool", [])
+                if self._safe_int(x) > 0
+            ]
+
+            if not pool:
+                continue
+
+            is_self_blocking_unload = bool(req.get("self_blocking_unload", False))
+
+            self_blocking_loc_id = self._safe_int(req.get("self_blocking_unload_loc_id"))
+            if self_blocking_loc_id <= 0 and is_self_blocking_unload and len(pool) == 1:
+                self_blocking_loc_id = int(pool[0])
+
             cost_map = self._agent_cost_map(state, "agv", agv_id)
             agent_index = agv_index_by_id.get(agv_id, -1)
 
             candidates: list[dict[str, Any]] = []
+
             for rack_id in pool:
+                rack_id = int(rack_id)
+
                 if rack_id in reserved_rack_ids:
                     continue
-                if agent_index >= 0 and not self._is_valid_action(valid_masks, agent_index, rack_id):
+
+                is_special_self_blocking_candidate = (
+                    is_self_blocking_unload
+                    and self_blocking_loc_id > 0
+                    and rack_id == int(self_blocking_loc_id)
+                )
+
+                # Ordinary candidates must pass valid_action_masks.
+                # Only the exact self-blocking current loc_id may bypass this check.
+                if (
+                    not is_special_self_blocking_candidate
+                    and agent_index >= 0
+                    and not self._is_valid_action(valid_masks, agent_index, rack_id)
+                ):
                     continue
 
                 eta_agv = self._safe_cost(cost_map, rack_id)
+
+                # The state builder should normally provide eta_agv=0 for start==goal.
+                # This fallback keeps the self-blocking special candidate usable even
+                # if the cost table does not contain it.
+                if eta_agv is None and is_special_self_blocking_candidate:
+                    eta_agv = 0
+
                 if eta_agv is None:
                     continue
 
@@ -611,7 +804,11 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                     {
                         "rack_id": int(rack_id),
                         "eta_agv": int(eta_agv),
-                        "region_id": self.rack_to_region.get(int(rack_id), -1) if self.rack_to_region else -1,
+                        "region_id": (
+                            self.rack_to_region.get(int(rack_id), -1)
+                            if self.rack_to_region
+                            else -1
+                        ),
                         "nearby_idle_pickers": int(nearby_idle_pickers),
                     }
                 )
@@ -620,10 +817,15 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 key=lambda c: (
                     int(c["eta_agv"]),
                     -int(c["nearby_idle_pickers"]),
-                    int(region_load.get(int(c["region_id"]), 0)) if int(c["region_id"]) >= 0 else 0,
+                    (
+                        int(region_load.get(int(c["region_id"]), 0))
+                        if int(c["region_id"]) >= 0
+                        else 0
+                    ),
                     int(c["rack_id"]),
                 )
             )
+
             candidates = candidates[: max(0, int(self.config.stage1_pool_k))]
 
             if not candidates:
@@ -633,7 +835,7 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
                 {
                     "request_id": req["request_id"],
                     "agv_id": int(agv_id),
-                    "purpose": str(req["purpose"]),
+                    "purpose": str(req.get("purpose", "")),
                     "candidates": candidates,
                 }
             )

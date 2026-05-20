@@ -41,6 +41,13 @@ class StateBuilder:
 
         request_ids = self._select_closest_ids(env, agvs, request_ids_all, self.config.topk_requests)
         empty_ids = self._select_closest_ids(env, agvs, empty_ids_all, self.config.topk_empty)
+        self_blocking_unload_targets = self._build_self_blocking_unload_targets(
+            env=env,
+            agvs=agvs,
+            empty_ids_all=empty_ids_all,
+            empty_ids_topk=empty_ids,
+        )
+        self_blocking_loc_ids = [int(item["loc_id"]) for item in self_blocking_unload_targets]
         empty_rack_pool_trace = {
             "total_empty_racks_in_environment": int(len(empty_ids_all)),
             "topk_limit": int(self.config.topk_empty),
@@ -62,7 +69,12 @@ class StateBuilder:
                 empty_ids_all=empty_ids_all,
                 empty_ids_topk=empty_ids,
             )
-        candidate_loc_ids = self._ordered_union(request_ids, empty_ids, goal_ids)
+        candidate_loc_ids = self._ordered_union(
+            request_ids,
+            empty_ids,
+            goal_ids,
+            self_blocking_loc_ids,
+        )
         cost_table = self._build_cost_table(env, agvs, pickers, candidate_loc_ids)
         valid_action_masks = self._valid_action_masks(env)
 
@@ -83,6 +95,7 @@ class StateBuilder:
             "goal_ids": [int(loc_id) for loc_id in goal_ids],
             "requests_rack_ids_topk": [int(loc_id) for loc_id in request_ids],
             "empty_rack_ids_topk": [int(loc_id) for loc_id in empty_ids],
+            "self_blocking_unload_targets": self_blocking_unload_targets,
             "empty_rack_pool_trace": empty_rack_pool_trace,
             "empty_rack_semantic_trace": empty_rack_semantic_trace,
             "valid_action_masks": valid_action_masks,
@@ -241,6 +254,64 @@ class StateBuilder:
             "raw_empty_indicator": env_empty_indicator,
             "location_evaluations": location_evaluations,
         }
+
+    def _build_self_blocking_unload_targets(
+        self,
+        env: Any,
+        agvs: list[Any],
+        empty_ids_all: list[int],
+        empty_ids_topk: list[int],
+    ) -> list[dict[str, Any]]:
+        coords_to_loc_id = self._invert_location_map(env)
+        goal_ids = set(int(x) for x in self._goal_ids(env))
+        empty_ids_all_set = {int(x) for x in empty_ids_all if int(x) > 0}
+        empty_ids_topk_set = {int(x) for x in empty_ids_topk if int(x) > 0}
+
+        targets: list[dict[str, Any]] = []
+        seen_loc_ids: set[int] = set()
+
+        for agent in agvs:
+            if bool(getattr(agent, "busy", False)):
+                continue
+            if int(getattr(agent, "target", 0) or 0) != 0:
+                continue
+            if getattr(agent, "carrying_shelf", None) is None:
+                continue
+            if not bool(getattr(agent, "has_delivered", False)):
+                continue
+
+            coords_yx = (int(agent.y), int(agent.x))
+            loc_id = int(coords_to_loc_id.get(coords_yx, 0))
+            if loc_id <= 0 or loc_id in goal_ids:
+                continue
+            if loc_id in seen_loc_ids:
+                continue
+
+            shelf_layer_id = int(env.grid[CollisionLayers.SHELVES, agent.y, agent.x])
+            carried_shelf_layer_id = int(env.grid[CollisionLayers.CARRIED_SHELVES, agent.y, agent.x])
+            if shelf_layer_id != 0:
+                continue
+
+            current_in_empty_ids_all = int(loc_id) in empty_ids_all_set
+            current_in_empty_topk = int(loc_id) in empty_ids_topk_set
+            if current_in_empty_ids_all and current_in_empty_topk:
+                continue
+
+            targets.append(
+                {
+                    "agv_id": int(agent.id),
+                    "loc_id": int(loc_id),
+                    "coords_yx": [int(agent.y), int(agent.x)],
+                    "current_in_empty_ids_all": bool(current_in_empty_ids_all),
+                    "current_in_empty_topk": bool(current_in_empty_topk),
+                    "shelf_layer_id": int(shelf_layer_id),
+                    "carried_shelf_layer_id": int(carried_shelf_layer_id),
+                    "reason": "idle_delivered_agv_on_excluded_storage_cell",
+                }
+            )
+            seen_loc_ids.add(int(loc_id))
+
+        return targets
 
     def _build_cost_table(
         self,
