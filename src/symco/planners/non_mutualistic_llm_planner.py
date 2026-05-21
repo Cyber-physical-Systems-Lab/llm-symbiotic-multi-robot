@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Optional, Set
 
-from symco.planners.symbiotic_comm_llm_planner import (
+from symco.planners.mutualistic_llm_planner import (
     _DictMessage,
     SymbioticCommLLMPlanner,
     SymbioticCommLLMPlannerConfig,

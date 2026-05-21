@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from symco.planners.symbiotic_comm_llm_planner import (
+from symco.planners.mutualistic_llm_planner import (
     SymbioticCommLLMPlanner,
     SymbioticCommLLMPlannerConfig,
 )

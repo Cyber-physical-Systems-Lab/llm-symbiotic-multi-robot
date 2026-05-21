@@ -20,7 +20,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from symco.planners.non_mutualistic_comm_llm_planner_v2 import (  # noqa: E402
+from symco.planners.non_mutualistic_llm_planner import (  # noqa: E402
     NonMutualisticCommLLMPlannerV2,
     NonMutualisticCommLLMPlannerV2Config,
 )

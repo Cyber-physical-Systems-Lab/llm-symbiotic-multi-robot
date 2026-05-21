@@ -1,4 +1,4 @@
-# /Users/yangliu/master-thesis/llm-symbiotic-multi-robot/scripts/run_symbiotic_comm_llm.py
+# /Users/yangliu/master-thesis/llm-symbiotic-multi-robot/scripts/run_mutualistic_llm.py
 """
 CLI entrypoint for running the SymbioticCommLLMPlanner (symbiotic comm + LLM, 3-stage).
 
@@ -12,7 +12,7 @@ This script mirrors the repo's other runners:
   Debug: debug
 
 Example:
-  python scripts/run_symbiotic_comm_llm.py \
+  python scripts/run_mutualistic_llm.py \
     --env_id tarware-small-2agvs-2pickers-partialobs-v1 \
     --num_seeds 4 --repeats_per_seed 3 --seed 0 --max_steps 500 \
     --out_dir outputs \
@@ -36,7 +36,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from symco.planners.symbiotic_comm_llm_planner import (  # noqa: E402
+from symco.planners.mutualistic_llm_planner import (  # noqa: E402
     SymbioticCommLLMPlanner,
     SymbioticCommLLMPlannerConfig,
 )

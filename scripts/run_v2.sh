@@ -49,7 +49,7 @@ run_non_mutualistic_v2() {
   local env_id="$1"
   echo
   echo ">>> Running NON-MUTUALISTIC V2 on ${env_id}"
-  python scripts/run_non_mutualistic_comm_llm_v2.py \
+  python scripts/run_non_mutualistic_llm.py \
     --env_id "${env_id}" \
     --episodes "${EPISODES}" \
     --seed "${SEED}" \

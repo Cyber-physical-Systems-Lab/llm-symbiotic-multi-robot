@@ -1,7 +1,7 @@
 """
 CLI entrypoint for running the NonMutualisticCommLLMPlanner.
 
-This mirrors scripts/run_symbiotic_comm_llm.py as closely as possible while
+This mirrors scripts/run_mutualistic_llm.py as closely as possible while
 swapping in the non-mutualistic staged LLM baseline.
 """
 

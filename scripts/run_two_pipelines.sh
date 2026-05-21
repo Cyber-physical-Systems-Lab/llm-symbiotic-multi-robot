@@ -55,7 +55,7 @@ run_symbiotic() {
   local env_id="$1"
   echo
   echo ">>> Running SYMBIOTIC on ${env_id}"
-  python scripts/run_symbiotic_comm_llm.py \
+  python scripts/run_mutualistic_llm.py \
     --env_id "${env_id}" \
     --num_seeds "${NUM_SEEDS}" \
     --repeats_per_seed "${REPEATS_PER_SEED}" \
@@ -81,7 +81,7 @@ run_non_mutualistic_v2() {
   local env_id="$1"
   echo
   echo ">>> Running NON-MUTUALISTIC V2 on ${env_id}"
-  python scripts/run_non_mutualistic_comm_llm_v2.py \
+  python scripts/run_non_mutualistic_llm.py \
     --env_id "${env_id}" \
     --num_seeds "${NUM_SEEDS}" \
     --repeats_per_seed "${REPEATS_PER_SEED}" \
