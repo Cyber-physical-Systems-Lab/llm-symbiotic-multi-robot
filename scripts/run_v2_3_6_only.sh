@@ -9,7 +9,7 @@ set -euo pipefail
 ENV_ID="tarware-medium-3agvs-6pickers-partialobs-v1"
 
 NUM_SEEDS=4
-REPEATS_PER_SEED=3
+REPEATS_PER_SEED=2
 SEED=0
 MAX_STEPS=1000
 
@@ -41,7 +41,7 @@ echo "Base seed: ${SEED}"
 echo "Max steps: ${MAX_STEPS}"
 echo "========================================"
 
-python scripts/run_non_mutualistic_llm.py \
+python scripts/run_non_mutualistic_comm_llm_v2.py \
   --env_id "${ENV_ID}" \
   --num_seeds "${NUM_SEEDS}" \
   --repeats_per_seed "${REPEATS_PER_SEED}" \

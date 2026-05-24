@@ -11,9 +11,9 @@ ENV_IDS=(
   "tarware-medium-3agvs-6pickers-partialobs-v1"
 )
 
-EPISODES=4
-SEED=1
-MAX_STEPS=1500
+EPISODES=1
+SEED=2
+MAX_STEPS=1000
 
 OUT_DIR="outputs/run_v2_20260419"
 
@@ -49,7 +49,7 @@ run_non_mutualistic_v2() {
   local env_id="$1"
   echo
   echo ">>> Running NON-MUTUALISTIC V2 on ${env_id}"
-  python scripts/run_non_mutualistic_llm.py \
+  python scripts/run_non_mutualistic_comm_llm_v2.py \
     --env_id "${env_id}" \
     --episodes "${EPISODES}" \
     --seed "${SEED}" \
