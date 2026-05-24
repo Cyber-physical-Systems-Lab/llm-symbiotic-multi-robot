@@ -47,7 +47,16 @@ class StateBuilder:
             empty_ids_all=empty_ids_all,
             empty_ids_topk=empty_ids,
         )
+        orphaned_cooperative_waiting_targets = self._build_orphaned_cooperative_waiting_targets(
+            env=env,
+            agvs=agvs,
+            pickers=pickers,
+            goal_ids=goals_all,
+        )
         self_blocking_loc_ids = [int(item["loc_id"]) for item in self_blocking_unload_targets]
+        orphaned_loc_ids = [
+            int(item["target_loc_id"]) for item in orphaned_cooperative_waiting_targets
+        ]
         empty_rack_pool_trace = {
             "total_empty_racks_in_environment": int(len(empty_ids_all)),
             "topk_limit": int(self.config.topk_empty),
@@ -74,6 +83,7 @@ class StateBuilder:
             empty_ids,
             goal_ids,
             self_blocking_loc_ids,
+            orphaned_loc_ids,
         )
         cost_table = self._build_cost_table(env, agvs, pickers, candidate_loc_ids)
         valid_action_masks = self._valid_action_masks(env)
@@ -96,6 +106,7 @@ class StateBuilder:
             "requests_rack_ids_topk": [int(loc_id) for loc_id in request_ids],
             "empty_rack_ids_topk": [int(loc_id) for loc_id in empty_ids],
             "self_blocking_unload_targets": self_blocking_unload_targets,
+            "orphaned_cooperative_waiting_targets": orphaned_cooperative_waiting_targets,
             "empty_rack_pool_trace": empty_rack_pool_trace,
             "empty_rack_semantic_trace": empty_rack_semantic_trace,
             "valid_action_masks": valid_action_masks,
@@ -310,6 +321,77 @@ class StateBuilder:
                 }
             )
             seen_loc_ids.add(int(loc_id))
+
+        return targets
+
+    def _build_orphaned_cooperative_waiting_targets(
+        self,
+        env: Any,
+        agvs: list[Any],
+        pickers: list[Any],
+        goal_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        goal_id_set = {int(x) for x in goal_ids if int(x) > 0}
+        idle_picker_count = sum(1 for picker in pickers if not bool(getattr(picker, "busy", False)))
+
+        targets: list[dict[str, Any]] = []
+        seen_target_loc_ids: set[int] = set()
+
+        for agent in agvs:
+            target = int(getattr(agent, "target", 0) or 0)
+            if target <= 0:
+                continue
+            if target in goal_id_set:
+                continue
+            if target not in env.action_id_to_coords_map:
+                continue
+            if not bool(getattr(agent, "busy", False)):
+                continue
+
+            target_coords_yx = env.action_id_to_coords_map[target]
+            if (int(agent.y), int(agent.x)) != (
+                int(target_coords_yx[0]),
+                int(target_coords_yx[1]),
+            ):
+                continue
+
+            carrying = getattr(agent, "carrying_shelf", None) is not None
+            has_delivered = bool(getattr(agent, "has_delivered", False))
+            if (not carrying) and (not has_delivered):
+                phase = "LOAD"
+            elif carrying and has_delivered:
+                phase = "UNLOAD"
+            else:
+                continue
+
+            has_any_picker_same_target = any(
+                int(getattr(picker, "target", 0) or 0) == int(target)
+                for picker in pickers
+            )
+            has_busy_picker_same_target = any(
+                bool(getattr(picker, "busy", False))
+                and int(getattr(picker, "target", 0) or 0) == int(target)
+                for picker in pickers
+            )
+            if has_busy_picker_same_target:
+                continue
+            if int(target) in seen_target_loc_ids:
+                continue
+
+            targets.append(
+                {
+                    "agv_id": int(agent.id),
+                    "target_loc_id": int(target),
+                    "coords_yx": [int(agent.y), int(agent.x)],
+                    "target_coords_yx": [int(target_coords_yx[0]), int(target_coords_yx[1])],
+                    "phase": phase,
+                    "has_any_picker_same_target": bool(has_any_picker_same_target),
+                    "has_busy_picker_same_target": bool(has_busy_picker_same_target),
+                    "idle_picker_count": int(idle_picker_count),
+                    "reason": "agv_at_cooperative_target_without_busy_picker_binding",
+                }
+            )
+            seen_target_loc_ids.add(int(target))
 
         return targets
 

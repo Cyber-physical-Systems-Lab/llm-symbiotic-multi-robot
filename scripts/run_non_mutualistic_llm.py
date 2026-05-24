@@ -152,6 +152,9 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                     "requests_rack_ids_topk": state["requests_rack_ids_topk"],
                     "empty_rack_ids_topk": state["empty_rack_ids_topk"],
                     "self_blocking_unload_targets": state.get("self_blocking_unload_targets", []),
+                    "orphaned_cooperative_waiting_targets": state.get(
+                        "orphaned_cooperative_waiting_targets", []
+                    ),
                     "goal_ids": state["goal_ids"],
                     "location_coords_xy": state.get("location_coords_xy", {}),
                 },
@@ -185,6 +188,12 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
                 ),
                 "debug_self_blocking_unload_recovery": getattr(
                     planner, "last_debug_self_blocking_unload_recovery", False
+                ),
+                "debug_orphaned_picker_recovery": getattr(
+                    planner, "last_debug_orphaned_picker_recovery", False
+                ),
+                "debug_orphaned_picker_recovery_examples": getattr(
+                    planner, "last_debug_orphaned_picker_recovery_examples", []
                 ),
                 "ack_count": ack_count,
                 "busy_count": busy_count,
@@ -301,6 +310,15 @@ class NonMutualisticEpisodeRunner(EpisodeRunner):
             ),
             "self_blocking_unload_recovery_via_comm": int(
                 getattr(planner, "self_blocking_unload_recovery_via_comm", 0)
+            ),
+            "orphaned_picker_recovery_steps": int(
+                getattr(planner, "orphaned_picker_recovery_steps", 0)
+            ),
+            "orphaned_picker_recovery_successes": int(
+                getattr(planner, "orphaned_picker_recovery_successes", 0)
+            ),
+            "orphaned_picker_recovery_no_idle_picker": int(
+                getattr(planner, "orphaned_picker_recovery_no_idle_picker", 0)
             ),
             "assigned_cooperative_tasks": assigned_cooperative_tasks,
             "avg_planned_sync_cost": self._safe_ratio(
@@ -691,6 +709,18 @@ def main() -> int:
     print(f"mean_clashes: {mean_metric(episode_summaries, 'total_clashes'):.3f}")
     print(f"mean_stucks: {mean_metric(episode_summaries, 'total_stucks'):.3f}")
     print(f"mean_comm_steps: {mean_metric(episode_summaries, 'communication_steps'):.3f}")
+    print(
+        "mean_orphaned_picker_recovery_steps: "
+        f"{mean_metric(episode_summaries, 'orphaned_picker_recovery_steps'):.3f}"
+    )
+    print(
+        "mean_orphaned_picker_recovery_successes: "
+        f"{mean_metric(episode_summaries, 'orphaned_picker_recovery_successes'):.3f}"
+    )
+    print(
+        "mean_orphaned_picker_recovery_no_idle_picker: "
+        f"{mean_metric(episode_summaries, 'orphaned_picker_recovery_no_idle_picker'):.3f}"
+    )
     print(
         "mean_avg_cooperative_waiting_time: "
         f"{mean_metric(episode_summaries, 'avg_cooperative_waiting_time'):.3f}"

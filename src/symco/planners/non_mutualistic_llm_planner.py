@@ -59,6 +59,11 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
         self.self_blocking_unload_recovery_with_existing_picker = 0
         self.self_blocking_unload_recovery_via_comm = 0
         self.last_debug_self_blocking_unload_recovery = False
+        self.orphaned_picker_recovery_steps = 0
+        self.orphaned_picker_recovery_successes = 0
+        self.orphaned_picker_recovery_no_idle_picker = 0
+        self.last_debug_orphaned_picker_recovery = False
+        self.last_debug_orphaned_picker_recovery_examples = []
 
     def reset(self) -> None:
         """Reset per-episode planner state without recreating LLM clients."""
@@ -352,6 +357,122 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
         return actions
 
+    def _build_orphaned_picker_recovery_actions(
+        self,
+        state: dict[str, Any],
+    ) -> list[int] | None:
+        targets = state.get("orphaned_cooperative_waiting_targets", [])
+        if not isinstance(targets, list) or not targets:
+            return None
+
+        actions = self._assemble_actions_from_assignments(state, assignments=[])
+        agents = self._sorted_agents(state)
+        valid_masks = state.get("valid_action_masks", [])
+        protected_picker_bindings = self._protected_picker_bindings_for_waiting_agvs(state)
+        protected_picker_ids = {int(x) for x in protected_picker_bindings.values()}
+        active_assignment_by_picker: dict[int, dict[str, Any]] = {}
+        for assignment in self.active_assignments.values():
+            if not isinstance(assignment, dict):
+                continue
+            picker_id_for_assignment = self._safe_int(assignment.get("picker_id"))
+            if (
+                picker_id_for_assignment > 0
+                and picker_id_for_assignment not in active_assignment_by_picker
+            ):
+                active_assignment_by_picker[int(picker_id_for_assignment)] = assignment
+        agent_index_by_id = {
+            int(agent["id"]): idx
+            for idx, agent in enumerate(agents)
+            if isinstance(agent, dict) and "id" in agent
+        }
+
+        used_picker_ids: set[int] = set()
+        used_target_loc_ids: set[int] = set()
+        examples: list[dict[str, Any]] = []
+        assigned_any = False
+
+        for item in targets:
+            if not isinstance(item, dict):
+                continue
+            agv_id = self._safe_int(item.get("agv_id"))
+            target_loc_id = self._safe_int(item.get("target_loc_id"))
+            if agv_id <= 0 or target_loc_id <= 0:
+                continue
+            if int(target_loc_id) in used_target_loc_ids:
+                continue
+            protected_picker_id_for_agv = self._safe_int(
+                protected_picker_bindings.get(
+                    int(agv_id),
+                    protected_picker_bindings.get(str(agv_id), 0),
+                )
+            )
+
+            candidates: list[tuple[int, int]] = []
+            for agent in agents:
+                if not isinstance(agent, dict) or agent.get("type") != "PICKER":
+                    continue
+                if bool(agent.get("busy", False)):
+                    continue
+
+                picker_id = self._safe_int(agent.get("id"))
+                if picker_id <= 0:
+                    continue
+                active_assignment = active_assignment_by_picker.get(int(picker_id))
+                if isinstance(active_assignment, dict):
+                    bound_agv_id = self._safe_int(active_assignment.get("agv_id"))
+                    bound_rack_id = self._safe_int(active_assignment.get("rack_id"))
+                    if bound_agv_id != int(agv_id) or bound_rack_id != int(target_loc_id):
+                        continue
+                if (
+                    picker_id in protected_picker_ids
+                    and picker_id != protected_picker_id_for_agv
+                ):
+                    continue
+                if picker_id in used_picker_ids:
+                    continue
+
+                picker_index = agent_index_by_id.get(int(picker_id), -1)
+                if picker_index < 0:
+                    continue
+                if not self._is_valid_action(valid_masks, picker_index, int(target_loc_id)):
+                    continue
+
+                eta_picker = self._safe_cost(
+                    self._agent_cost_map(state, "picker", picker_id),
+                    target_loc_id,
+                )
+                if eta_picker is None:
+                    continue
+                candidates.append((int(eta_picker), int(picker_id)))
+
+            candidates.sort(key=lambda item: (int(item[0]), int(item[1])))
+            if not candidates:
+                continue
+
+            eta_picker, picker_id = candidates[0]
+            if 1 <= picker_id <= len(actions):
+                actions[picker_id - 1] = int(target_loc_id)
+                used_picker_ids.add(int(picker_id))
+                used_target_loc_ids.add(int(target_loc_id))
+                assigned_any = True
+                examples.append(
+                    {
+                        "agv_id": int(agv_id),
+                        "target_loc_id": int(target_loc_id),
+                        "phase": item.get("phase"),
+                        "picker_id": int(picker_id),
+                        "eta_picker": int(eta_picker),
+                        "reason": "rebind_idle_picker_to_orphaned_agv_target",
+                    }
+                )
+
+        self.last_debug_orphaned_picker_recovery_examples = examples
+        if not assigned_any:
+            self.orphaned_picker_recovery_no_idle_picker += 1
+            return None
+
+        return actions
+
     # ----------------------------
     # Main planning loop
     # ----------------------------
@@ -366,8 +487,22 @@ class NonMutualisticCommLLMPlannerV2(SymbioticCommLLMPlanner):
 
         self.planner_throttled_by_budget = False
         self.last_debug_self_blocking_unload_recovery = False
+        self.last_debug_orphaned_picker_recovery = False
+        self.last_debug_orphaned_picker_recovery_examples = []
         self._update_active_assignments_from_state(state)
         self._update_simple_unload_deadlock_debug(state)
+
+        orphaned_actions = self._build_orphaned_picker_recovery_actions(state)
+        if orphaned_actions is not None:
+            self.last_communication_triggered = False
+            self.last_used_fallback = False
+            self.last_request = None
+            self.last_response = None
+            self.last_final_plan = None
+            self.last_debug_orphaned_picker_recovery = True
+            self.orphaned_picker_recovery_steps += 1
+            self.orphaned_picker_recovery_successes += 1
+            return orphaned_actions
 
         recovery_actions = self._build_self_blocking_unload_recovery_actions(state)
         if recovery_actions is not None:
