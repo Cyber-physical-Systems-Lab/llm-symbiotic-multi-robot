@@ -41,7 +41,7 @@ echo "Base seed: ${SEED}"
 echo "Max steps: ${MAX_STEPS}"
 echo "========================================"
 
-python scripts/run_non_mutualistic_comm_llm_v2.py \
+python scripts/run_non_mutualistic_llm.py \
   --env_id "${ENV_ID}" \
   --num_seeds "${NUM_SEEDS}" \
   --repeats_per_seed "${REPEATS_PER_SEED}" \
