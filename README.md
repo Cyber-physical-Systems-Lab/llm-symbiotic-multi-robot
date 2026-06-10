@@ -1,39 +1,44 @@
-
+````markdown
 # Adaptive Symbiotic Information-Sharing (ASIS)
 
-**"Adaptive Symbiotic Information-Sharing Framework Using Large Language Models for Heterogeneous Multi-Robot Collaboration"**
+**Adaptive Symbiotic Information-Sharing Framework Using Large Language Models for Heterogeneous Multi-Robot Collaboration**
 
-The project studies AGV--picker coordination in a TA-RWARE-style warehouse environment, where successful task execution requires coordinated loading, delivery, and unloading between different types of agents.
+This repository accompanies a master thesis on AGV--picker coordination in a TA-RWARE-style warehouse environment. The project studies whether allowing picker-side evaluation to influence AGV-side commitment before execution can improve heterogeneous task allocation and coordination.
 
+## Thesis
 
+Author: Liu Yang  
+Programme: M.Sc. Computer Science, Uppsala University  
+
+Thesis link: [Add thesis link here]
 
 ## Project Overview
 
 The warehouse task involves heterogeneous agents with different roles:
 
-The warehouse task involves heterogeneous agents and task-related locations:
-
-- **AGVs** transport shelves or racks between storage cells and goal locations.
-- **Pickers** support AGVs during cooperative loading and unloading.
-- **Requested racks** are the racks currently required by the warehouse request queue.
+- **AGVs** transport racks between storage cells and goal locations.
+- **Pickers** support AGVs during cooperative LOAD and UNLOAD operations.
+- **Requested racks** are racks currently required by the warehouse request queue.
 - **Goal locations** are delivery points where requested racks are completed.
-- **Empty rack locations** are available storage cells where delivered racks can be returned after delivery.
+- **Empty rack locations** are storage cells where delivered racks can be returned.
 
-The main research focus is whether allowing picker-side evaluation to influence commitment formation can improve coordination outcomes compared with a non-mutualistic architecture where the AGV side commits first and the picker side only responds afterwards.
+The main research question is whether a mutualistic staged LLM planner improves coordination compared with a non-mutualistic staged LLM baseline, where the AGV side commits first and the picker side only responds afterward.
 
 ## Coordination Methods
 
-### Mutualistic LLM Planner
+### Mutualistic Staged LLM Planner
 
-The mutualistic planner uses a staged LLM-based coordination framework in which picker-side evaluation can influence the final commitment before execution.
+The mutualistic planner uses a three-stage coordination process:
 
-In this framework, the AGV side proposes candidate targets, the picker side evaluates supportability, and the final commitment can be shaped by support-side information.
+1. **AGV-side proposal:** proposes a primary rack and backup rack options.
+2. **Picker-side support evaluation:** evaluates whether the proposed options can be supported.
+3. **Final commitment:** retains the primary target, revises to a backup target, or skips the request.
 
 Main planner file:
 
 ```text
 src/symco/planners/mutualistic_llm_planner.py
-```
+````
 
 Main runner:
 
@@ -41,17 +46,13 @@ Main runner:
 scripts/run_mutualistic_llm.py
 ```
 
-### Non-Mutualistic LLM Planner
+### Non-Mutualistic Staged LLM Baseline
 
-The non-mutualistic planner is the main staged LLM baseline.
+The non-mutualistic baseline keeps a staged structure, but picker-side evaluation cannot revise the AGV-side target.
 
-In this baseline, the AGV side first commits to a rack target. The picker side then evaluates only that already committed target and returns an ACK/BUSY response.
-
-The staged structure is:
-
-1. **Stage 1:** AGV-side unilateral rack commitment.
-2. **Stage 2:** Picker-side ACK/BUSY response for the committed rack.
-3. **Stage 3:** Deterministic final assignment integration.
+1. **AGV-side commitment:** commits to one rack target.
+2. **Picker-side ACK/BUSY response:** evaluates only the committed target.
+3. **Deterministic integration:** forms an assignment or skips the request.
 
 Main planner file:
 
@@ -67,9 +68,11 @@ scripts/run_non_mutualistic_llm.py
 
 ### Heuristic Baseline
 
-The heuristic policy is used as a rule-based warehouse reference.
+The heuristic baseline is used as a deterministic warehouse reference. It is derived from the predefined TA-RWARE heuristic policy and wrapped in this project to collect thesis-specific metrics.
 
-It provides a domain-grounded comparison point for overall throughput, especially completed deliveries. It is not intended to represent the same LLM-based process-level coordination mechanism as the mutualistic and non-mutualistic planners.
+On the AGV side, requested items are assigned to the closest available AGV. The AGV then follows picking, delivery, and returning missions. On the picker side, warehouse rack groups are split into picker-related sections, and picker support is dispatched according to the section of the AGV mission target.
+
+The heuristic is used as an external domain-grounded reference, not as the main architectural baseline.
 
 ## Repository Structure
 
@@ -82,17 +85,13 @@ It provides a domain-grounded comparison point for overall throughput, especiall
 ├── src/
 │   └── symco/
 │       ├── core/
-│       │   └── state_builder.py
 │       ├── llm/
-│       │   └── ...
 │       ├── planners/
-│       │   ├── mutualistic_llm_planner.py
-│       │   ├── non_mutualistic_llm_planner.py
-│       │   └── ...
 │       └── run/
-│           └── runner.py
 ├── task-assignment-robotic-warehouse/
 ├── outputs/
+├── docs/
+│   └── figures/
 └── README.md
 ```
 
@@ -105,57 +104,51 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install the project dependencies:
+Install dependencies:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-The experiments require the TA-RWARE environment and the project dependencies used by the planners, runners, and LLM clients.
+The experiments require the TA-RWARE environment and an LLM backend compatible with the planner client configuration.
 
 ## LLM Backend
 
-The LLM-based planners require an LLM backend compatible with the planner client configuration.
-
-Relevant code is located under:
+The LLM-based planners require a model server or API compatible with the code under:
 
 ```text
 src/symco/llm/
 ```
 
-Before running LLM experiments, make sure the model server and related configuration are available.
+Before running LLM experiments, make sure the LLM backend and configuration are available.
 
 ## Running Experiments
 
-### Run the Mutualistic LLM Planner
-
-Example command:
+### Mutualistic Planner
 
 ```bash
 python3 scripts/run_mutualistic_llm.py \
   --env_id tarware-medium-6agvs-6pickers-partialobs-v1 \
   --num_seeds 4 \
-  --repeats_per_seed 3 \
+  --repeats_per_seed 2 \
   --seed 0 \
   --max_steps 1000 \
   --out_dir outputs/mutualistic_6_6
 ```
 
-### Run the Non-Mutualistic LLM Planner
-
-Example command:
+### Non-Mutualistic Planner
 
 ```bash
 python3 scripts/run_non_mutualistic_llm.py \
   --env_id tarware-medium-6agvs-6pickers-partialobs-v1 \
   --num_seeds 4 \
-  --repeats_per_seed 3 \
+  --repeats_per_seed 2 \
   --seed 0 \
   --max_steps 1000 \
   --out_dir outputs/non_mutualistic_6_6
 ```
 
-### Run the Two Main LLM Pipelines
+### Main Experiment Script
 
 ```bash
 bash scripts/run_two_pipelines.sh
@@ -163,12 +156,12 @@ bash scripts/run_two_pipelines.sh
 
 ## Experimental Settings
 
-The main experiments evaluate three AGV--picker ratios:
+The main experiments use three AGV--picker ratios:
 
 ```text
-3:6
-6:6
-6:3
+3:6  picker-abundant
+6:6  balanced
+6:3  picker-scarce
 ```
 
 Example environment IDs:
@@ -179,11 +172,75 @@ tarware-medium-6agvs-6pickers-partialobs-v1
 tarware-medium-6agvs-3pickers-partialobs-v1
 ```
 
-These settings are used to examine how coordination performance changes when picker support is abundant, balanced, or scarce.
+Each episode runs for 1000 steps. The main thesis experiments use 4 environment seeds and 2 repeated runs per seed.
+
+## Main Results
+
+The main experiments compare three policies:
+
+- **Mutualistic staged LLM planner**
+- **Non-mutualistic staged LLM baseline**
+- **Heuristic warehouse reference**
+
+The results are evaluated across three AGV--picker ratios:
+
+- **3:6**: picker-abundant setting
+- **6:6**: balanced setting
+- **6:3**: picker-scarce setting
+
+### Completed Deliveries
+
+![Completed Deliveries](docs/figures/figure_5_1_completed_deliveries_with_ci.png)
+
+The mutualistic staged LLM planner achieves higher completed deliveries than the non-mutualistic staged LLM baseline in the 3:6 and 6:6 settings. In the 6:3 picker-scarce setting, this advantage disappears, and the heuristic reference performs best.
+
+### Average Execution Time
+
+![Average Execution Time](docs/figures/figure_5_2_avg_execution_time_with_ci.png)
+
+In the 3:6 and 6:6 settings, the mutualistic planner has much lower average execution time than the non-mutualistic baseline. This suggests that assignments are completed or cleared more quickly, allowing the system to return to coordination more often.
+
+In the 6:3 setting, the same advantage does not appear, suggesting that picker scarcity limits the benefit of mutualistic revision.
+
+### Seed-Level Paired Differences
+
+![Seed-Level Paired Differences](docs/figures/figure_5_3_seed_level_paired_differences.png)
+
+The seed-level paired differences show that the mutualistic planner has a consistent advantage over the non-mutualistic baseline in the 3:6 and 6:6 settings. In the 6:3 setting, the pattern becomes mixed, indicating that the mutualistic advantage is not stable under picker scarcity.
+
+## Key Conclusions
+
+1. **Mutualistic staged coordination is useful when picker-side evaluation can lead to supported alternatives.**  
+   In the 3:6 and 6:6 settings, the mutualistic planner improves completed deliveries and assignment-level execution efficiency compared with the non-mutualistic staged LLM baseline.
+
+2. **The benefit is resource-dependent.**  
+   In the 6:3 picker-scarce setting, the mutualistic advantage disappears. Under this condition, many AGV-side requests cannot easily become supportable final commitments.
+
+3. **Picker-side evaluation changes the coordination process.**  
+   Target revision rate and unsupported request ratio show that picker-side evaluation affects the mutualistic planner's final commitment process.
+
+4. **The timing and authority of picker-side evaluation matter.**  
+   The key architectural difference between the mutualistic planner and the non-mutualistic baseline is whether picker-side evaluation can influence AGV-side commitment before execution.
+
+## Main Evaluation Metrics
+
+* **Completed Deliveries:** number of successfully completed rack deliveries.
+* **Average Execution Time over All Assignments:** average duration of cooperative assignments, including completed and incomplete assignments.
+* **Triggered Coordination Steps:** number of steps in which staged coordination is triggered.
+* **Assignment Count:** number of cooperative assignments formed by the planner.
+* **Assignment Success Rate:** proportion of cooperative assignments that complete successfully.
+* **Target Revision Rate:** proportion of final assignments where the committed rack differs from the AGV-side primary proposal.
+* **Unsupported Request Ratio:** proportion of AGV-side cooperative requests that do not become supportable final commitments after picker-side evaluation.
+
+## Event-Based Coordination Trigger
+
+The LLM-based planners use event-based coordination triggering. Instead of calling the LLM at every environment step, coordination is triggered when an eligible AGV requires cooperative support and picker resources are available.
+
+This reduces unnecessary communication while still enabling AGV--picker coordination when LOAD or UNLOAD support is needed.
 
 ## Output Files
 
-Experiment outputs are written to the selected output directory, usually under:
+Experiment outputs are written under:
 
 ```text
 outputs/
@@ -196,42 +253,7 @@ Typical output files include:
 *.jsonl
 ```
 
-The summary file contains episode-level metrics.
-
-The JSONL file contains step-level records, including agent states, actions, communication outputs, final assignments, and debug information.
-
-## Main Evaluation Metrics
-
-### Completed Deliveries
-
-The number of successfully completed rack deliveries in an episode.
-
-### Average Execution Time over All Assignments
-
-The average duration of cooperative assignments, including both completed and incomplete assignments.
-
-This metric captures the execution burden imposed by cooperative assignments, not only the assignments that finish successfully.
-
-### Triggered Coordination Steps
-
-The number of steps in which event-based coordination is triggered.
-
-### Assignment Count
-
-The number of cooperative assignments formed by the planner.
-
-### Assignment Success Rate
-
-The proportion of cooperative assignments that lead to successful cooperative execution.
-
-## Event-Based Coordination Triggering Mechanism
-
-The LLM-based planners use an event-based coordination triggering mechanism.
-
-Instead of calling the LLM at every environment step, communication is triggered when coordination is needed, such as when an eligible AGV requires cooperative support and picker resources are available.
-
-This mechanism is used to reduce unnecessary communication while still enabling coordination when task execution requires AGV--picker cooperation.
-
+Summary files contain episode-level metrics. JSONL files contain step-level records, including states, actions, communication outputs, final assignments, and debug information.
 
 ## Reproducibility Notes
 
@@ -239,15 +261,32 @@ Experiments involving LLM calls may not be perfectly deterministic, even with fi
 
 Results may depend on:
 
-- the LLM backend,
-- model version,
-- decoding settings,
-- prompt configuration,
-- random seed,
-- number of repeats per seed,
-- and local experiment configuration.
+* LLM backend,
+* model version,
+* decoding settings,
+* prompt configuration,
+* random seed,
+* number of repeats per seed,
+* and local experiment configuration.
 
+## Citation
+
+If using the TA-RWARE environment, please cite the original TA-RWARE work:
+
+```bibtex
+@misc{krnjaic2023scalable,
+  title={Scalable Multi-Agent Reinforcement Learning for Warehouse Logistics with Robotic and Human Co-Workers},
+  author={Aleksandar Krnjaic and Raul D. Steleac and Jonathan D. Thomas and Georgios Papoudakis and Lukas Schäfer and Andrew Wing Keung To and Kuan-Ho Lao and Murat Cubuktepe and Matthew Haley and Peter Börsting and Stefano V. Albrecht},
+  year={2023},
+  eprint={2212.11498},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG}
+}
+```
 
 ## License
 
 Add license information here.
+
+```
+```
