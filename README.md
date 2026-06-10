@@ -1,4 +1,4 @@
-````markdown
+
 # Adaptive Symbiotic Information-Sharing (ASIS)
 
 **Adaptive Symbiotic Information-Sharing Framework Using Large Language Models for Heterogeneous Multi-Robot Collaboration**
@@ -288,5 +288,4 @@ If using the TA-RWARE environment, please cite the original TA-RWARE work:
 
 Add license information here.
 
-```
-```
+
